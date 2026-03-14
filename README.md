@@ -17,6 +17,8 @@ First, run the development server:
 
 ```bash
 npm run dev
+# If you want the app on port 3002 (and still auto-reload on changes):
+npm run dev:3002
 # or
 yarn dev
 # or
@@ -27,12 +29,57 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+If port 3000 is already in use, run:
+
+```bash
+npx next dev -p 3002
+```
+
 ## Production
 
 ```bash
 npm run build
 npm start
+# Or on port 3002:
+npm run build
+npm run start:3002
 ```
+
+## Deploy to Vercel
+
+### 1) Environment Variables (Vercel → Project → Settings → Environment Variables)
+
+Required:
+
+- `JWT_SECRET` (long random string)
+
+Required if you want interview history/dashboard persistence:
+
+- `MONGODB_URI`
+- `MONGODB_DB`
+
+Optional (AI features):
+
+- `HUGGINGFACE_API_KEY`
+- `HUGGINGFACE_MODEL` (optional; defaults apply)
+- `HUGGINGFACE_MODEL_RESUME` / `HUGGINGFACE_MODEL_QUESTION` / `HUGGINGFACE_MODEL_EVAL` (optional)
+- `HUGGINGFACE_PROVIDER` (optional)
+- `OPENAI_API_KEY` / `OPENAI_MODEL` (optional fallback)
+
+Optional:
+
+- `ALLOW_ANON_INTERVIEWS` (recommend `false` on production)
+
+### 2) MongoDB Atlas Network Access
+
+If using Atlas, your cluster must allow inbound connections from Vercel builds/runtimes.
+
+- Atlas → Network Access → allow your Vercel IPs, or (for quick testing only) temporarily allow `0.0.0.0/0`.
+
+### 3) Build & Runtime Notes
+
+- This app uses cookie-based auth and server rendering on key routes, so it is deployed as **dynamic** pages on Vercel.
+- Never commit `.env.local` (it contains secrets). Use Vercel environment variables instead.
 
 ## AI Provider Configuration
 
@@ -74,4 +121,4 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# AI-Interview-Simulator-
+

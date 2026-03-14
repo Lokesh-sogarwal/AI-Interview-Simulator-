@@ -2,8 +2,17 @@ import bcrypt from "bcryptjs";
 
 import { getDb } from "@/lib/mongodb";
 import { setAuthCookie, signAuthToken } from "@/lib/auth";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { isValidEmail, isValidPassword } from "@/lib/validators";
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "auth:signup",
+    limit: 5,
+    windowMs: 30 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as
     | { name?: string; email?: string; password?: string }
     | null;
@@ -15,6 +24,24 @@ export async function POST(request: Request) {
   if (!name || !email || !password) {
     return Response.json(
       { ok: false, error: "Missing name, email, or password." },
+      { status: 400 },
+    );
+  }
+
+  if (name.length > 80) {
+    return Response.json(
+      { ok: false, error: "Name is too long." },
+      { status: 400 },
+    );
+  }
+
+  if (!isValidEmail(email)) {
+    return Response.json({ ok: false, error: "Invalid email." }, { status: 400 });
+  }
+
+  if (!isValidPassword(password)) {
+    return Response.json(
+      { ok: false, error: "Password must be 8-72 characters." },
       { status: 400 },
     );
   }

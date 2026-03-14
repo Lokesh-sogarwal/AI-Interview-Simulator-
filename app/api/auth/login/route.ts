@@ -2,8 +2,17 @@ import bcrypt from "bcryptjs";
 
 import { getDb } from "@/lib/mongodb";
 import { setAuthCookie, signAuthToken } from "@/lib/auth";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { isValidEmail } from "@/lib/validators";
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "auth:login",
+    limit: 10,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as
     | { email?: string; password?: string }
     | null;
@@ -14,6 +23,13 @@ export async function POST(request: Request) {
   if (!email || !password) {
     return Response.json(
       { ok: false, error: "Missing email or password." },
+      { status: 400 },
+    );
+  }
+
+  if (!isValidEmail(email) || password.length > 72) {
+    return Response.json(
+      { ok: false, error: "Invalid email or password." },
       { status: 400 },
     );
   }

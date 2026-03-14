@@ -1,6 +1,8 @@
 import { starUserPrompt } from "@/lib/prompts";
 import { safeJsonParse } from "@/lib/openai";
 import { llmText } from "@/lib/llm";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { clampString } from "@/lib/validators";
 
 type StarAnalysis = {
   star_used: boolean;
@@ -27,12 +29,19 @@ function fallbackStar(answer: string): StarAnalysis {
 }
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "ai:star",
+    limit: 30,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as
     | { question?: string; answer?: string }
     | null;
 
-  const question = body?.question?.trim() || "";
-  const answer = body?.answer?.trim() || "";
+  const question = clampString(body?.question?.trim() || "", 800);
+  const answer = clampString(body?.answer?.trim() || "", 4000);
 
   if (!question || !answer) {
     return Response.json(

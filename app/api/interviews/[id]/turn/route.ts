@@ -2,6 +2,8 @@ import { ObjectId } from "mongodb";
 
 import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/mongodb";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { clampString } from "@/lib/validators";
 
 function allowAnonymousInterviews() {
   return process.env.ALLOW_ANON_INTERVIEWS === "true" || process.env.NODE_ENV !== "production";
@@ -19,6 +21,13 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const rl = rateLimit(request, {
+    keyPrefix: "interviews:turn",
+    limit: 120,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const user = await getCurrentUser();
   const anonId = !user && allowAnonymousInterviews() ? getAnonId(request) : null;
   if (!user && !anonId) {
@@ -49,8 +58,8 @@ export async function POST(
       }
     | null;
 
-  const question = body?.question?.trim() || "";
-  const answer = body?.answer?.trim() || "";
+  const question = clampString(body?.question?.trim() || "", 800);
+  const answer = clampString(body?.answer?.trim() || "", 4000);
   if (!question || !answer) {
     return Response.json(
       { ok: false, error: "Missing question or answer." },

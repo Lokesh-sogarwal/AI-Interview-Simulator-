@@ -11,7 +11,10 @@ export function getMongoClientPromise() {
 
   if (!globalThis.__mongoClientPromise) {
     const client = new MongoClient(uri);
-    globalThis.__mongoClientPromise = client.connect();
+    globalThis.__mongoClientPromise = client.connect().catch((err) => {
+      globalThis.__mongoClientPromise = undefined;
+      throw err;
+    });
   }
 
   return globalThis.__mongoClientPromise;
@@ -21,7 +24,15 @@ export async function getDb() {
   const clientPromise = getMongoClientPromise();
   if (!clientPromise) return null;
 
-  const client = await clientPromise;
-  const dbName = process.env.MONGODB_DB || "interview_simulator";
-  return client.db(dbName);
+  try {
+    const client = await clientPromise;
+    const dbName = process.env.MONGODB_DB || "interview_simulator";
+    return client.db(dbName);
+  } catch (err) {
+    console.error(
+      "MongoDB connection failed. Check MONGODB_URI (Atlas username/password + URL-encoding) and Network Access allowlist.",
+      err,
+    );
+    return null;
+  }
 }

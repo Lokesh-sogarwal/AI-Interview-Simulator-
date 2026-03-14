@@ -2,6 +2,7 @@ import { ObjectId } from "mongodb";
 
 import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/mongodb";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 function allowAnonymousInterviews() {
   return process.env.ALLOW_ANON_INTERVIEWS === "true" || process.env.NODE_ENV !== "production";
@@ -19,6 +20,13 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const rl = rateLimit(request, {
+    keyPrefix: "interviews:finish",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const user = await getCurrentUser();
   const anonId = !user && allowAnonymousInterviews() ? getAnonId(request) : null;
   if (!user && !anonId) {
