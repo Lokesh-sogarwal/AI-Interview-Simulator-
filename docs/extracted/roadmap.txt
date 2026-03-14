@@ -1,0 +1,39 @@
+# roadmap
+
+Source: /Users/lokesh/Downloads/AI_Mock_Interview_Simulator_Roadmap.pdf
+
+AI Mock Interview Simulator - Complete Roadmap
+Project Overview
+• Build an AI-powered mock interview platform using Next.js and OpenAI API.
+• Features include resume-based questions, AI evaluation, voice analysis, and performance
+dashboard.
+• Target: Placement-ready, scalable full-stack AI project.
+30-Day Development Plan
+• Week 1: Project setup (Next.js, Tailwind, Auth, Database setup). Basic UI and routing.
+• Week 2: Implement AI question generation using OpenAI API. Build interview session flow.
+• Week 3: Add answer evaluation system and scoring breakdown. Create dashboard with
+analytics.
+• Week 4: Add resume upload parsing, voice input (Web Speech API), and final deployment.
+Team Task Division (3 Members)
+• Member 1 (Frontend Lead): UI/UX, Interview Interface, Timer, Dashboard, Charts, Tailwind
+styling.
+• Member 2 (Backend & AI Lead): API Routes, OpenAI integration, Answer evaluation logic,
+Resume parsing.
+• Member 3 (Database & DevOps Lead): MongoDB schema, Authentication, Data storage,
+Deployment (Vercel), Testing.
+Unique Features to Make It Stand Out
+• Resume-based dynamic question generation.
+• Adaptive difficulty adjustment.
+• Voice-based interview mode with filler word detection.
+• Company-specific interview modes.
+• Detailed AI feedback with technical & communication scoring.
+• Performance tracking dashboard with improvement suggestions.
+Deployment & Resume Value
+• Deploy frontend & backend using Vercel.
+• Store environment variables securely.
+• Add proper README with architecture explanation.
+
+
+
+
+• Highlight AI integration and adaptive logic on resume.
