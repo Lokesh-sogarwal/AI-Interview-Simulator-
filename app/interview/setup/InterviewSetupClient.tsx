@@ -17,6 +17,7 @@ type InterviewDetails = {
 
 const DETAILS_KEY = "aisim_interview_details";
 const RESUME_KEY = "aisim_resume_text";
+const INTERVIEW_ID_KEY = "aisim_interview_id";
 
 function uniq(arr: string[]) {
   return Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
@@ -35,7 +36,10 @@ function safeParseDetails(value: string | null): InterviewDetails | null {
     if (!parsed || typeof parsed !== "object") return null;
 
     const type = parsed.type === "Technical" ? "Technical" : "HR";
-    const difficulty = parsed.difficulty === "Easy" || parsed.difficulty === "Hard" ? parsed.difficulty : "Medium";
+    const difficulty =
+      parsed.difficulty === "Easy" || parsed.difficulty === "Hard" || parsed.difficulty === "Adaptive"
+        ? parsed.difficulty
+        : "Medium";
     const role = typeof parsed.role === "string" && parsed.role.trim() ? parsed.role : "Software Engineer";
     const experience = typeof parsed.experience === "string" && parsed.experience.trim() ? parsed.experience : "0-2 years";
 
@@ -65,6 +69,9 @@ export default function InterviewSetupClient() {
 
   const [resumeMode, setResumeMode] = useState<"upload" | "default">("upload");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
+
+  const [startMode, setStartMode] = useState<"now" | "schedule">("now");
+  const [scheduledFor, setScheduledFor] = useState<string>("");
 
   const [status, setStatus] = useState<"idle" | "submitting" | "error">("idle");
   const [message, setMessage] = useState<string>("");
@@ -101,60 +108,58 @@ export default function InterviewSetupClient() {
     window.localStorage.setItem(DETAILS_KEY, JSON.stringify(details));
   }
 
+  async function uploadResumeText(): Promise<string> {
+    if (!resumeFile) {
+      throw new Error("Please select a resume file, or choose Default.");
+    }
+
+    const formData = new FormData();
+    formData.set("resume", resumeFile);
+
+    const response = await fetch("/api/resume", {
+      method: "POST",
+      body: formData,
+    });
+
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          ok: true;
+          filename: string;
+          size: number;
+          type: string;
+          resumeText: string | null;
+        }
+      | { ok: false; error: string }
+      | null;
+
+    if (!response.ok || !payload || payload.ok === false) {
+      const errorMessage =
+        payload && "error" in payload && payload.error
+          ? payload.error
+          : "Upload failed. Please try again.";
+      throw new Error(errorMessage);
+    }
+
+    return payload.resumeText?.trim() || "";
+  }
+
   async function startDefault() {
     persistDetails(false);
     window.localStorage.removeItem(RESUME_KEY);
+    window.localStorage.removeItem(INTERVIEW_ID_KEY);
     window.location.href = "/interview";
   }
 
   async function uploadAndStart() {
-    if (!resumeFile) {
-      setStatus("error");
-      setMessage("Please select a resume file, or choose Default.");
-      return;
-    }
-
     try {
       setStatus("submitting");
       setMessage("Uploading resume…");
 
-      const formData = new FormData();
-      formData.set("resume", resumeFile);
+      const extractedText = await uploadResumeText();
+      if (extractedText) window.localStorage.setItem(RESUME_KEY, extractedText);
+      else window.localStorage.removeItem(RESUME_KEY);
 
-      const response = await fetch("/api/resume", {
-        method: "POST",
-        body: formData,
-      });
-
-      const payload = (await response.json().catch(() => null)) as
-        | {
-            ok: true;
-            filename: string;
-            size: number;
-            type: string;
-            resumeText: string | null;
-          }
-        | { ok: false; error: string }
-        | null;
-
-      if (!response.ok || !payload || payload.ok === false) {
-        const errorMessage =
-          payload && "error" in payload && payload.error
-            ? payload.error
-            : "Upload failed. Please try again.";
-
-        setStatus("error");
-        setMessage(errorMessage);
-        return;
-      }
-
-      if (payload.resumeText && payload.resumeText.trim()) {
-        window.localStorage.setItem(RESUME_KEY, payload.resumeText);
-      } else {
-        window.localStorage.removeItem(RESUME_KEY);
-      }
-
-      const extractedText = payload.resumeText?.trim() || "";
+      window.localStorage.removeItem(INTERVIEW_ID_KEY);
       let nextFocusAreas = focusAreas.trim();
 
       // Use LLM (or fallback) to extract skills and auto-fill Focus areas.
@@ -224,9 +229,74 @@ export default function InterviewSetupClient() {
 
       persistDetails(true, { focusAreas: nextFocusAreas });
       window.location.href = "/interview";
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Something went wrong. Please try again.";
       setStatus("error");
-      setMessage("Something went wrong. Please try again.");
+      setMessage(msg);
+    } finally {
+      setStatus("idle");
+    }
+  }
+
+  async function scheduleInterview() {
+    try {
+      if (!scheduledFor.trim()) {
+        setStatus("error");
+        setMessage("Please choose a date and time.");
+        return;
+      }
+
+      setStatus("submitting");
+      setMessage("Scheduling…");
+
+      const useResume = resumeMode === "upload";
+      let extractedText = "";
+      if (useResume) {
+        setMessage("Uploading resume…");
+        extractedText = await uploadResumeText();
+      }
+
+      // Persist what the scheduled interview should use.
+      persistDetails(useResume);
+
+      const res = await fetch("/api/interviews/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scheduledFor,
+          role,
+          experience,
+          type,
+          difficulty,
+          company,
+          focusAreas,
+          interactionMode,
+          useResume,
+          resumeText: useResume ? extractedText : "",
+        }),
+      });
+
+      const payload = (await res.json().catch(() => null)) as
+        | { ok: true; id: string }
+        | { ok: false; error: string }
+        | null;
+
+      if (!res.ok || !payload || payload.ok === false) {
+        const errorMessage =
+          payload && "error" in payload && payload.error
+            ? payload.error
+            : "Could not schedule the interview. Please try again.";
+        setStatus("error");
+        setMessage(errorMessage);
+        return;
+      }
+
+      setMessage("Interview scheduled. You can start it from your dashboard.");
+      window.location.href = "/dashboard";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Something went wrong. Please try again.";
+      setStatus("error");
+      setMessage(msg);
     } finally {
       setStatus("idle");
     }
@@ -236,6 +306,11 @@ export default function InterviewSetupClient() {
     e.preventDefault();
     setMessage("");
     setStatus("idle");
+
+    if (startMode === "schedule") {
+      await scheduleInterview();
+      return;
+    }
 
     if (resumeMode === "default") {
       await startDefault();
@@ -322,6 +397,7 @@ export default function InterviewSetupClient() {
                 onChange={(e) => setDifficulty(e.target.value as Difficulty)}
                 className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
               >
+                <option value="Adaptive">Adaptive</option>
                 <option value="Easy">Easy</option>
                 <option value="Medium">Medium</option>
                 <option value="Hard">Hard</option>
@@ -374,12 +450,53 @@ export default function InterviewSetupClient() {
           </div>
 
           <div className="grid gap-3 rounded-2xl border border-foreground/10 p-4">
+            <div className="text-sm font-medium">Start</div>
+            <div className="text-sm text-foreground/70">Start now, or schedule it and begin from the dashboard.</div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-6">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="startMode"
+                  value="now"
+                  checked={startMode === "now"}
+                  onChange={() => setStartMode("now")}
+                />
+                <span className="text-sm">Start now</span>
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="startMode"
+                  value="schedule"
+                  checked={startMode === "schedule"}
+                  onChange={() => setStartMode("schedule")}
+                />
+                <span className="text-sm">Schedule interview</span>
+              </label>
+
+              {startMode === "schedule" ? (
+                <label className="sm:ml-auto">
+                  <span className="sr-only">Scheduled time</span>
+                  <input
+                    type="datetime-local"
+                    value={scheduledFor}
+                    onChange={(e) => setScheduledFor(e.target.value)}
+                    className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
+                    required
+                  />
+                </label>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="grid gap-3 rounded-2xl border border-foreground/10 p-4">
             <div className="text-sm font-medium">Resume</div>
             <div className="text-sm text-foreground/70">
               Choose Upload for resume-based questions, or Default to start without a resume.
             </div>
 
-            {/* <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <label className="inline-flex items-center gap-2">
                 <input
                   type="radio"
@@ -400,7 +517,7 @@ export default function InterviewSetupClient() {
                 />
                 <span className="text-sm">Default (no resume)</span>
               </label>
-            </div> */}
+            </div>
 
             <label className="block cursor-pointer rounded-2xl border border-dashed border-foreground/25 p-4 transition-opacity hover:opacity-95">
               <input
@@ -439,7 +556,13 @@ export default function InterviewSetupClient() {
               disabled={status === "submitting"}
               className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-6 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
             >
-              {status === "submitting" ? "Starting…" : "Start interview"}
+              {status === "submitting"
+                ? startMode === "schedule"
+                  ? "Scheduling…"
+                  : "Starting…"
+                : startMode === "schedule"
+                  ? "Schedule interview"
+                  : "Start interview"}
             </button>
 
             <div className={status === "error" ? "text-sm text-foreground" : "text-sm text-foreground/70"} aria-live="polite">

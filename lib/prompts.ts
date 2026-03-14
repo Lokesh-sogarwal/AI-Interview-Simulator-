@@ -1,5 +1,5 @@
 export type InterviewType = "Technical" | "HR";
-export type Difficulty = "Easy" | "Medium" | "Hard";
+export type Difficulty = "Easy" | "Medium" | "Hard" | "Adaptive";
 
 export function interviewSimulatorSystemPrompt() {
   return [
@@ -165,7 +165,25 @@ export function evaluationSystemPrompt() {
     interviewSimulatorSystemPrompt(),
     "",
     "You are a strict but fair interviewer.",
-    "Evaluate the candidate's answer professionally.",
+    "Evaluate the candidate's answer professionally and realistically.",
+    "CRITICAL RULES:",
+    "- Base all feedback ONLY on the provided Question and Candidate Answer.",
+    "- Do NOT invent projects, technologies, companies, systems, or achievements that are not explicitly stated.",
+    "- If the answer is irrelevant, incorrect, or does not address the question, scores MUST be low.",
+    "- If the answer is gibberish / nonsense / empty (e.g., random characters), set all scores to 0-1 and state there are no strengths to assess.",
+    "- Do not give 'good' scores just because the tone sounds confident.",
+    "- Strengths/weaknesses must be grounded in what the candidate actually said.",
+    "SCORING RUBRIC (0-10):",
+    "- 0-2: wrong/irrelevant/empty; no meaningful attempt; or harmful misconceptions.",
+    "- 3-4: partial; some correct fragments but mostly unclear/incorrect; weak relevance.",
+    "- 5-6: acceptable; addresses question at a basic level with some gaps.",
+    "- 7-8: strong; correct, structured, covers trade-offs and specifics.",
+    "- 9-10: exceptional; precise, complete, includes constraints/trade-offs and examples.",
+    "OVERALL SCORE:",
+    "- Must approximately reflect the sub-scores; do not give an overall score higher than the sub-scores imply.",
+    "FOLLOW-UP QUESTION:",
+    "- Must directly relate to the question AND the candidate answer.",
+    "- If the answer was weak/incorrect, ask a corrective/foundational follow-up.",
     "Respond ONLY in valid JSON format.",
     "Do not add extra text outside JSON.",
   ].join("\n");
@@ -190,6 +208,11 @@ export function evaluationUserPrompt(params: {
     params.resumeContext?.trim() ? `Candidate Resume Context (skills/projects): ${params.resumeContext.trim().slice(0, 2500)}` : "",
     `Question: ${params.question}`,
     `Candidate Answer: ${params.answer}`,
+    "",
+    "REQUIREMENTS:",
+    "- If the candidate did NOT answer the question (or answered a different question), keep overall_score <= 4.",
+    "- If the answer contains invented details or vague buzzwords without substance, penalize depth_score.",
+    "- If the candidate says 'I don't know' but proposes a reasonable approach, score modestly (3-6) depending on clarity.",
     "Evaluate based on:",
     "1. Technical Accuracy (0-10)",
     "2. Clarity of Explanation (0-10)",
@@ -241,13 +264,16 @@ export function starUserPrompt(params: { question: string; answer: string }) {
 }
 
 export function adjustDifficulty(prev: Difficulty, prevScore: number): Difficulty {
+  // In adaptive mode, treat the starting point as Medium.
+  const current: Exclude<Difficulty, "Adaptive"> = prev === "Adaptive" ? "Medium" : prev;
+
   if (prevScore >= 7) {
-    return prev === "Easy" ? "Medium" : "Hard";
+    return current === "Easy" ? "Medium" : "Hard";
   }
 
   if (prevScore <= 3) {
-    return prev === "Hard" ? "Medium" : "Easy";
+    return current === "Hard" ? "Medium" : "Easy";
   }
 
-  return prev;
+  return current;
 }

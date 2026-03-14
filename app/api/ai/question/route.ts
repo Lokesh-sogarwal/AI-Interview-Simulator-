@@ -52,7 +52,8 @@ export async function POST(request: Request) {
     | null;
 
   const type = (body?.type || "HR") as InterviewType;
-  const difficulty = (body?.difficulty || "Medium") as Difficulty;
+  const rawDifficulty = (body?.difficulty || "Medium") as Difficulty;
+  const difficulty = rawDifficulty === "Adaptive" ? ("Medium" as Difficulty) : rawDifficulty;
   const role = clampString(body?.role?.trim() || "Software Engineer", 120);
   const experience = clampString(body?.experience?.trim() || "0-2 years", 40);
   const company = clampString(body?.company?.trim() || "", 80);

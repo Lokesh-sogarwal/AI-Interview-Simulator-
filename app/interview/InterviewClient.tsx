@@ -7,6 +7,7 @@ import { adjustDifficulty } from "@/lib/prompts";
 import type { Evaluation } from "@/app/api/ai/evaluate/route";
 import type { FinalReport } from "@/app/api/ai/report/route";
 import type { ResumeProfile } from "@/app/api/resume/profile/route";
+import { createFaceDetector, type FaceDetectorApi } from "./faceDetector";
 
 type Turn = {
   question: string;
@@ -41,13 +42,6 @@ type InterviewDetails = {
   useResume?: boolean;
   interactionMode?: "typing" | "video";
 };
-
-type DetectedFace = { boundingBox: DOMRectReadOnly };
-type FaceDetectorInstance = { detect: (input: HTMLVideoElement) => Promise<DetectedFace[]> };
-type FaceDetectorCtor = new (options?: {
-  fastMode?: boolean;
-  maxDetectedFaces?: number;
-}) => FaceDetectorInstance;
 
 const DETAILS_KEY = "aisim_interview_details";
 const RESUME_KEY = "aisim_resume_text";
@@ -90,12 +84,6 @@ function safeParseInterviewDetails(value: string | null): InterviewDetails | nul
   }
 }
 
-function getFaceDetectorCtor(): FaceDetectorCtor | null {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const w = window as any;
-  return (w.FaceDetector as FaceDetectorCtor | undefined) ?? null;
-}
-
 function getRecognition(): SpeechRecognitionType | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any;
@@ -121,6 +109,7 @@ export default function InterviewClient() {
   const [type, setType] = useState<InterviewType>("HR");
   const [role, setRole] = useState("Software Engineer");
   const [experience, setExperience] = useState("0-2 years");
+  const [difficultySetting, setDifficultySetting] = useState<Difficulty>("Medium");
   const [difficulty, setDifficulty] = useState<Difficulty>("Medium");
   const [company, setCompany] = useState<string>("");
   const [focusAreas, setFocusAreas] = useState<string>("");
@@ -132,6 +121,7 @@ export default function InterviewClient() {
   const [question, setQuestion] = useState<string>("");
   const [answer, setAnswer] = useState<string>("");
   const [turns, setTurns] = useState<Turn[]>([]);
+  const turnsRef = useRef<Turn[]>([]);
   const [interviewId, setInterviewId] = useState<string>("");
   const [status, setStatus] = useState<"idle" | "loading" | "evaluating" | "done">(
     "idle",
@@ -143,6 +133,9 @@ export default function InterviewClient() {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionType | null>(null);
+  const preferredVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const speakingRef = useRef(false);
+  const speakTokenRef = useRef(0);
 
   const [videoEnabled, setVideoEnabled] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -152,33 +145,183 @@ export default function InterviewClient() {
   const [violations, setViolations] = useState(0);
   const [lastViolation, setLastViolation] = useState<string>("");
   const lastFaceViolationAtRef = useRef<number>(0);
+  const faceDetectorRef = useRef<FaceDetectorApi | null>(null);
+  const noFaceSinceRef = useRef<number | null>(null);
+  const noFaceIssuedRef = useRef(false);
+  const autoSubmitTriggeredRef = useRef(false);
   const lastSpokenQuestionRef = useRef<string>("");
   const warnedNoFullscreenRef = useRef(false);
   const pauseWarnedQuestionRef = useRef<string>("");
 
-  const recordViolation = useCallback((reason: string) => {
-    setViolations((v) => v + 1);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioAnalyserRef = useRef<AnalyserNode | null>(null);
+  const speakingSinceRef = useRef<number | null>(null);
+  const lastConversationViolationAtRef = useRef<number>(0);
+
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+
+  const recordViolation = useCallback((reason: string, opts?: { count?: boolean }) => {
+    // Once the interview is complete/terminated, don't keep adding warnings.
+    if (status === "done") return;
+    const count = opts?.count !== false;
     setLastViolation(reason);
     setMessage(`Proctor warning: ${reason}`);
+    if (count) setViolations((v) => v + 1);
+  }, [status]);
+
+  useEffect(() => {
+    if (!proctorEnabled) return;
+    if (violations < 2) return;
+    if (autoSubmitTriggeredRef.current) return;
+    autoSubmitTriggeredRef.current = true;
+    void (async () => {
+      const snapshot = turnsRef.current;
+      if (snapshot.length > 0) {
+        await finishInterview(snapshot, {
+          endedReason: "proctor_violations",
+          proctoring: { violations, lastViolation },
+        });
+        return;
+      }
+
+      // No answers yet; still terminate the session (best-effort DB update).
+      setStatus("done");
+      setQuestion("");
+      setAnswer("");
+      setFinalReport(null);
+      setAverageOverall(0);
+      setMessage("Interview ended due to repeated proctoring violations.");
+
+      try {
+        const id = await ensureInterviewSession();
+        if (id) {
+          const anonId = getOrCreateAnonId();
+          await fetch(`/api/interviews/${id}/finish`, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type": "application/json",
+              ...(anonId ? { "x-aisim-anon-id": anonId } : {}),
+            },
+            body: JSON.stringify({
+              averageScore: 0,
+              finalReport: null,
+              endedReason: "proctor_violations",
+              proctoring: { violations, lastViolation },
+            }),
+          });
+        }
+      } catch {
+        // ignore
+      } finally {
+        try {
+          window.localStorage.removeItem(INTERVIEW_ID_KEY);
+        } catch {
+          // ignore
+        }
+      }
+    })();
+    // finishInterview is intentionally not in deps; it is stable enough for this one-shot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proctorEnabled, violations, lastViolation]);
+
+  function pickPreferredVoice(voices: SpeechSynthesisVoice[]) {
+    const candidates = voices
+      .filter((v) => (v.lang || "").toLowerCase().startsWith("en"))
+      .sort((a, b) => {
+        const aLocal = a.localService ? 1 : 0;
+        const bLocal = b.localService ? 1 : 0;
+        if (aLocal !== bLocal) return bLocal - aLocal;
+
+        const aName = (a.name || "").toLowerCase();
+        const bName = (b.name || "").toLowerCase();
+        const score = (name: string) => {
+          // Prefer higher-quality voices when present.
+          if (name.includes("google")) return 5;
+          if (name.includes("samantha")) return 4;
+          if (name.includes("alex")) return 4;
+          if (name.includes("microsoft")) return 3;
+          if (name.includes("enhanced")) return 3;
+          if (name.includes("premium")) return 3;
+          return 1;
+        };
+        return score(bName) - score(aName);
+      });
+
+    return candidates[0] ?? voices[0] ?? null;
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!("speechSynthesis" in window)) return;
+
+    const synth = window.speechSynthesis;
+    const load = () => {
+      try {
+        const voices = synth.getVoices();
+        if (voices && voices.length) {
+          preferredVoiceRef.current = pickPreferredVoice(voices);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    load();
+    synth.addEventListener?.("voiceschanged", load);
+    return () => {
+      synth.removeEventListener?.("voiceschanged", load);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const speak = useCallback((text: string) => {
-    if (!text.trim()) return;
+  const speak = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
     if (typeof window === "undefined") return;
     if (!("speechSynthesis" in window)) {
       setMessage("Text-to-speech not supported in this browser.");
       return;
     }
 
+    const token = ++speakTokenRef.current;
+    const synth = window.speechSynthesis;
+
     try {
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 1;
-      utter.pitch = 1;
+      // Avoid capturing the AI voice into dictation.
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      setListening(false);
+
+      synth.cancel();
+      const utter = new SpeechSynthesisUtterance(trimmed);
       utter.lang = "en-US";
-      window.speechSynthesis.speak(utter);
+      utter.voice = preferredVoiceRef.current ?? null;
+
+      // Slightly slower, more human cadence.
+      utter.rate = 0.98;
+      utter.pitch = 1.0;
+      utter.volume = 1.0;
+
+      speakingRef.current = true;
+
+      await new Promise<void>((resolve) => {
+        utter.onend = () => resolve();
+        utter.onerror = () => resolve();
+        synth.speak(utter);
+      });
     } catch {
       setMessage("Could not play audio. You can continue without voice.");
+    } finally {
+      if (speakTokenRef.current === token) {
+        speakingRef.current = false;
+      }
     }
   }, []);
 
@@ -217,7 +360,11 @@ export default function InterviewClient() {
       setExperience(details.experience);
     }
 
-    if (details?.difficulty === "Easy" || details?.difficulty === "Medium" || details?.difficulty === "Hard") {
+    if (details?.difficulty === "Adaptive") {
+      setDifficultySetting("Adaptive");
+      setDifficulty("Medium");
+    } else if (details?.difficulty === "Easy" || details?.difficulty === "Medium" || details?.difficulty === "Hard") {
+      setDifficultySetting(details.difficulty);
       setDifficulty(details.difficulty);
     }
 
@@ -263,7 +410,7 @@ export default function InterviewClient() {
           role,
           experience,
           type,
-          difficulty,
+          difficulty: difficultySetting,
           company,
           focusAreas,
           interactionMode,
@@ -458,14 +605,24 @@ export default function InterviewClient() {
     if (!proctorEnabled || !videoEnabled) return;
     if (!videoRef.current) return;
 
-    const Ctor = getFaceDetectorCtor();
-    if (!Ctor) {
-      setLastViolation("Face detection not supported in this browser");
-      return;
+    let cancelled = false;
+
+    async function init() {
+      setLastViolation("Loading face detection…");
+      const detector = await createFaceDetector();
+      if (cancelled) {
+        detector?.dispose?.();
+        return;
+      }
+      faceDetectorRef.current = detector;
+      if (!detector) {
+        setLastViolation("Face detection unavailable; proctoring limited");
+      } else {
+        setLastViolation("");
+      }
     }
 
-    let cancelled = false;
-    const detector = new Ctor({ fastMode: true, maxDetectedFaces: 3 });
+    void init();
 
     async function tick() {
       if (cancelled) return;
@@ -473,23 +630,31 @@ export default function InterviewClient() {
       if (!v) return;
       if (v.readyState < 2) return;
 
+      const detector = faceDetectorRef.current;
+      if (!detector) return;
+
       try {
-        const faces = await detector.detect(v);
+        const boxes = await detector.detect(v);
         if (cancelled) return;
 
         const now = Date.now();
         const last = lastFaceViolationAtRef.current;
         const canRecord = now - last > 4000;
 
-        if (faces.length === 0) {
-          if (canRecord) {
+        if (boxes.length === 0) {
+          if (noFaceSinceRef.current === null) noFaceSinceRef.current = now;
+          if (!noFaceIssuedRef.current && now - noFaceSinceRef.current > 5000 && canRecord) {
+            noFaceIssuedRef.current = true;
             lastFaceViolationAtRef.current = now;
-            recordViolation("No face detected");
+            recordViolation("No face detected (5s+)");
           }
           return;
         }
 
-        if (faces.length > 1) {
+        noFaceSinceRef.current = null;
+        noFaceIssuedRef.current = false;
+
+        if (boxes.length > 1) {
           if (canRecord) {
             lastFaceViolationAtRef.current = now;
             recordViolation("Multiple faces detected");
@@ -497,7 +662,7 @@ export default function InterviewClient() {
           return;
         }
 
-        const bb = faces[0]?.boundingBox;
+        const bb = boxes[0];
         const vw = v.videoWidth || 0;
         const vh = v.videoHeight || 0;
         if (!bb || vw === 0 || vh === 0) return;
@@ -521,8 +686,103 @@ export default function InterviewClient() {
     return () => {
       cancelled = true;
       window.clearInterval(id);
+      faceDetectorRef.current?.dispose?.();
+      faceDetectorRef.current = null;
     };
   }, [proctorEnabled, videoEnabled, recordViolation]);
+
+  useEffect(() => {
+    if (!proctorEnabled) return;
+    if (interactionMode !== "video") return;
+
+    let cancelled = false;
+    let intervalId: number | null = null;
+
+    async function stopAudio() {
+      if (intervalId) window.clearInterval(intervalId);
+      intervalId = null;
+
+      const stream = audioStreamRef.current;
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      audioStreamRef.current = null;
+
+      const ctx = audioContextRef.current;
+      audioContextRef.current = null;
+      audioAnalyserRef.current = null;
+      speakingSinceRef.current = null;
+
+      try {
+        await ctx?.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    async function startAudio() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        audioStreamRef.current = stream;
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        audioContextRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+        audioAnalyserRef.current = analyser;
+
+        const data = new Uint8Array(analyser.fftSize);
+
+        intervalId = window.setInterval(() => {
+          if (cancelled) return;
+          const a = audioAnalyserRef.current;
+          if (!a) return;
+
+          // If the user is actively dictating, don't flag conversation.
+          if (listening) {
+            speakingSinceRef.current = null;
+            return;
+          }
+
+          a.getByteTimeDomainData(data);
+          let sumSquares = 0;
+          for (let i = 0; i < data.length; i++) {
+            const v = (data[i] - 128) / 128;
+            sumSquares += v * v;
+          }
+          const rms = Math.sqrt(sumSquares / data.length);
+
+          const now = Date.now();
+          const threshold = 0.04; // conservative; avoids most background noise
+          if (rms > threshold) {
+            if (speakingSinceRef.current === null) speakingSinceRef.current = now;
+            const spokenFor = now - (speakingSinceRef.current ?? now);
+            const canRecord = now - lastConversationViolationAtRef.current > 8000;
+
+            if (spokenFor > 2500 && canRecord) {
+              lastConversationViolationAtRef.current = now;
+              speakingSinceRef.current = null;
+              recordViolation("Conversation detected", { count: true });
+            }
+          } else {
+            speakingSinceRef.current = null;
+          }
+        }, 500);
+      } catch {
+        setLastViolation("Microphone permission denied; conversation detection disabled");
+      }
+    }
+
+    void startAudio();
+    return () => {
+      cancelled = true;
+      void stopAudio();
+    };
+  }, [proctorEnabled, interactionMode, listening, recordViolation]);
 
   async function ensureFullscreen() {
     if (document.fullscreenElement) return true;
@@ -556,7 +816,7 @@ export default function InterviewClient() {
     const id = window.setTimeout(() => {
       if (pauseWarnedQuestionRef.current === question) return;
       pauseWarnedQuestionRef.current = question;
-      recordViolation("Long pause detected. Please continue when ready.");
+      recordViolation("Long pause detected. Please continue when ready.", { count: false });
     }, 75000);
 
     return () => window.clearTimeout(id);
@@ -610,15 +870,25 @@ export default function InterviewClient() {
     if (lastSpokenQuestionRef.current === question) return;
     lastSpokenQuestionRef.current = question;
 
-    speak(question);
+    let cancelled = false;
 
-    // Best-effort: start listening shortly after speech begins.
-    // (Browser may require user gesture; user can always press Start listening.)
-    const id = window.setTimeout(() => {
+    void (async () => {
+      await speak(question);
+      if (cancelled) return;
+
+      // Best-effort: start listening after the interviewer finishes speaking.
+      // (Browser may require user gesture; user can always press Start listening.)
       startListening();
-    }, 900);
+    })();
 
-    return () => window.clearTimeout(id);
+    return () => {
+      cancelled = true;
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        // ignore
+      }
+    };
   }, [interactionMode, question, speak, startListening]);
 
   async function getNextQuestion() {
@@ -752,7 +1022,9 @@ export default function InterviewClient() {
     }
 
     setTurns((prev) => [...prev, newTurn]);
-    setDifficulty((prev) => adjustDifficulty(prev, evaluation.overall_score));
+    if (difficultySetting === "Adaptive") {
+      setDifficulty((prev) => adjustDifficulty(prev, evaluation.overall_score));
+    }
 
     const nextCount = turns.length + 1;
     if (nextCount >= 5) {
@@ -775,10 +1047,22 @@ export default function InterviewClient() {
     await getNextQuestion();
   }
 
-  async function finishInterview(forceTurns?: Turn[]) {
+  async function finishInterview(
+    forceTurns?: Turn[],
+    opts?: { endedReason?: string; proctoring?: { violations: number; lastViolation: string } },
+  ) {
     const snapshot = forceTurns ?? turns;
     if (snapshot.length === 0) {
-      setMessage("Answer at least one question before finishing.");
+      if (opts?.endedReason === "proctor_violations") {
+        setStatus("done");
+        setQuestion("");
+        setAnswer("");
+        setFinalReport(null);
+        setAverageOverall(0);
+        setMessage("Interview ended due to repeated proctoring violations.");
+      } else {
+        setMessage("Answer at least one question before finishing.");
+      }
       return;
     }
 
@@ -839,6 +1123,8 @@ export default function InterviewClient() {
           body: JSON.stringify({
             averageScore: overallAvg,
             finalReport: report ?? null,
+            endedReason: opts?.endedReason ?? null,
+            proctoring: opts?.proctoring ?? null,
           }),
         });
       }
@@ -849,7 +1135,17 @@ export default function InterviewClient() {
     setQuestion("");
     setAnswer("");
     setStatus("done");
-    setMessage("Interview complete. See your report card below.");
+    setMessage(
+      opts?.endedReason === "proctor_violations"
+        ? "Interview ended due to repeated proctoring violations. See your report card below."
+        : "Interview complete. See your report card below.",
+    );
+
+    try {
+      window.localStorage.removeItem(INTERVIEW_ID_KEY);
+    } catch {
+      // ignore
+    }
   }
 
   async function toggleListening() {
@@ -931,6 +1227,11 @@ export default function InterviewClient() {
                         setViolations(0);
                         setLastViolation("");
                         warnedNoFullscreenRef.current = false;
+                        autoSubmitTriggeredRef.current = false;
+                        noFaceSinceRef.current = null;
+                        noFaceIssuedRef.current = false;
+                        speakingSinceRef.current = null;
+                        lastConversationViolationAtRef.current = 0;
                       }
                     }}
                     className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
@@ -1014,7 +1315,7 @@ export default function InterviewClient() {
               <div className="flex flex-col gap-1">
                 <h2 className="text-xl font-semibold tracking-tight">AI interviewer</h2>
                 <div className="text-sm text-foreground/70">
-                  {role} · {type} · {difficulty}
+                  {role} · {type} · {difficultySetting === "Adaptive" ? `Adaptive (${difficulty})` : difficulty}
                 </div>
               </div>
 
@@ -1196,10 +1497,12 @@ export default function InterviewClient() {
                 <div className="grid gap-2">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium">Difficulty</span>
-                    <span className="text-sm text-foreground/70">{difficulty}</span>
+                    <span className="text-sm text-foreground/70">
+                      {difficultySetting === "Adaptive" ? `Adaptive (${difficulty})` : difficulty}
+                    </span>
                   </div>
                   <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] px-4 py-3 text-sm text-foreground/70">
-                    Adaptive based on your answers.
+                    {difficultySetting === "Adaptive" ? "Adaptive based on your answers." : "Fixed difficulty."}
                   </div>
                 </div>
 

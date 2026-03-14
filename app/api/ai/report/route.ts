@@ -31,6 +31,51 @@ function mean(values: number[]) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+function normalizeReport(report: FinalReport, computed: {
+  avgOverall: number;
+  avgTechnical: number;
+  avgCommunication: number;
+  avgProblemSolving: number;
+}): FinalReport {
+  const avgOverall = clamp0to10(round1(computed.avgOverall));
+  const avgTechnical = clamp0to10(round1(computed.avgTechnical));
+  const avgCommunication = clamp0to10(round1(computed.avgCommunication));
+  const avgProblemSolving = clamp0to10(round1(computed.avgProblemSolving));
+
+  const overall = clamp0to10(Number(report.overall_score ?? avgOverall));
+  const technical = clamp0to10(Number(report.technical_score ?? avgTechnical));
+  const communication = clamp0to10(Number(report.communication_score ?? avgCommunication));
+  const problemSolving = clamp0to10(Number(report.problem_solving_score ?? avgProblemSolving));
+
+  const strengths = Array.isArray(report.strengths)
+    ? report.strengths.map(String).filter(Boolean).slice(0, 8)
+    : [];
+  const weaknesses = Array.isArray(report.weaknesses)
+    ? report.weaknesses.map(String).filter(Boolean).slice(0, 8)
+    : [];
+  const improvement = Array.isArray(report.improvement_suggestions)
+    ? report.improvement_suggestions.map(String).filter(Boolean).slice(0, 10)
+    : [];
+  const focus = Array.isArray(report.recommended_focus_areas)
+    ? report.recommended_focus_areas.map(String).filter(Boolean).slice(0, 10)
+    : [];
+
+  // Guard against inflated scores: if model returns numbers far above computed averages,
+  // snap scores back to computed values.
+  const snapIfTooHigh = (val: number, computedVal: number) => (val - computedVal >= 1.5 ? computedVal : val);
+
+  return {
+    overall_score: snapIfTooHigh(overall, avgOverall),
+    technical_score: snapIfTooHigh(technical, avgTechnical),
+    communication_score: snapIfTooHigh(communication, avgCommunication),
+    problem_solving_score: snapIfTooHigh(problemSolving, avgProblemSolving),
+    strengths,
+    weaknesses,
+    improvement_suggestions: improvement,
+    recommended_focus_areas: focus,
+  };
+}
+
 function fallbackReport(params: {
   avgOverall: number;
   avgTechnical: number;
@@ -144,6 +189,11 @@ export async function POST(request: Request) {
     interviewSimulatorSystemPrompt(),
     "",
     "You are generating the FINAL REPORT CARD for the completed interview.",
+    "CRITICAL RULES:",
+    "- Base your feedback ONLY on the provided transcript + computed scoring summary.",
+    "- Do NOT invent projects/technologies/details the candidate did not explicitly mention.",
+    "- Your scores MUST be consistent with the computed averages provided.",
+    "- If the transcript shows incorrect/irrelevant answers, reflect that in weaknesses and suggested focus areas.",
     "Respond ONLY with valid JSON and no extra text.",
     "Use this exact schema:",
     "{",
@@ -198,7 +248,13 @@ export async function POST(request: Request) {
   if (ai) {
     const parsed = safeJsonParse<FinalReport>(ai.text);
     if (parsed) {
-      return Response.json({ ok: true, report: parsed, source: ai.provider });
+      const normalized = normalizeReport(parsed, {
+        avgOverall,
+        avgTechnical,
+        avgCommunication,
+        avgProblemSolving,
+      });
+      return Response.json({ ok: true, report: normalized, source: ai.provider });
     }
   }
 

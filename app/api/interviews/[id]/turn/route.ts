@@ -76,6 +76,7 @@ export async function POST(
     {
       _id: new ObjectId(id),
       ...(user ? { userId: user.id } : { anonId }),
+      status: { $nin: ["completed", "terminated"] },
     },
     {
       $push: {
@@ -88,7 +89,7 @@ export async function POST(
           answeredAt: answeredAt && !Number.isNaN(answeredAt.getTime()) ? answeredAt : now,
         },
       },
-      $set: { updatedAt: now },
+      $set: { updatedAt: now, status: "in_progress" },
     } as any,
   );
 
