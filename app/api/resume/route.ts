@@ -1,4 +1,13 @@
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "resume:upload",
+    limit: 10,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const formData = await request.formData();
   const resume = formData.get("resume");
 
@@ -6,6 +15,15 @@ export async function POST(request: Request) {
     return Response.json(
       { ok: false, error: "Missing resume file (field name: resume)." },
       { status: 400 },
+    );
+  }
+
+  // Keep parsing work bounded.
+  const maxBytes = 5 * 1024 * 1024;
+  if (resume.size > maxBytes) {
+    return Response.json(
+      { ok: false, error: "Resume file is too large (max 5MB)." },
+      { status: 413 },
     );
   }
 

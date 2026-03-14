@@ -4,6 +4,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/mongodb";
 import SignOutButton from "./SignOutButton";
 
+export const dynamic = "force-dynamic";
+
 type InterviewItem = {
   _id?: string;
   createdAt?: Date;
@@ -11,6 +13,8 @@ type InterviewItem = {
   type?: string;
   difficulty?: string;
   totalScore?: number | null;
+  averageScore?: number | null;
+  status?: string;
 };
 
 export default async function DashboardPage() {
@@ -54,19 +58,45 @@ export default async function DashboardPage() {
                     <th className="px-4 py-3 font-medium">Type</th>
                     <th className="px-4 py-3 font-medium">Role</th>
                     <th className="px-4 py-3 font-medium">Difficulty</th>
-                    <th className="px-4 py-3 font-medium">Total score</th>
+                    <th className="px-4 py-3 font-medium">Score</th>
+                    <th className="px-4 py-3 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {interviews.map((it) => (
                     <tr key={String(it._id)} className="border-t border-foreground/10">
                       <td className="px-4 py-3 text-foreground/80">
-                        {it.createdAt ? new Date(it.createdAt).toLocaleString() : "—"}
+                        {it._id ? (
+                          <a
+                            href={`/dashboard/interviews/${String(it._id)}`}
+                            className="underline underline-offset-4 hover:opacity-90"
+                          >
+                            {it.createdAt ? new Date(it.createdAt).toLocaleString() : "—"}
+                          </a>
+                        ) : (
+                          it.createdAt ? new Date(it.createdAt).toLocaleString() : "—"
+                        )}
                       </td>
                       <td className="px-4 py-3">{it.type || "—"}</td>
                       <td className="px-4 py-3">{it.role || "—"}</td>
                       <td className="px-4 py-3">{it.difficulty || "—"}</td>
-                      <td className="px-4 py-3">{typeof it.totalScore === "number" ? it.totalScore : "—"}</td>
+                      <td className="px-4 py-3">
+                        {typeof it.totalScore === "number"
+                          ? it.totalScore
+                          : typeof it.averageScore === "number"
+                            ? `${it.averageScore}/10`
+                            : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {it._id ? (
+                          <a
+                            href={`/dashboard/interviews/${String(it._id)}`}
+                            className="inline-flex h-9 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
+                          >
+                            View report
+                          </a>
+                        ) : null}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

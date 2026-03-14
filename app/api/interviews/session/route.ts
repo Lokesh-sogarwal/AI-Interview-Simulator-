@@ -1,5 +1,7 @@
 import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/mongodb";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { clampString } from "@/lib/validators";
 
 function allowAnonymousInterviews() {
   return process.env.ALLOW_ANON_INTERVIEWS === "true" || process.env.NODE_ENV !== "production";
@@ -14,6 +16,13 @@ function getAnonId(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "interviews:session",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const user = await getCurrentUser();
   const anonId = !user && allowAnonymousInterviews() ? getAnonId(request) : null;
   if (!user && !anonId) {
@@ -41,12 +50,12 @@ export async function POST(request: Request) {
       }
     | null;
 
-  const role = body?.role?.trim() || "Software Engineer";
-  const experience = body?.experience?.trim() || "0-2 years";
-  const type = body?.type?.trim() || "Mixed";
-  const difficulty = body?.difficulty?.trim() || "Adaptive";
-  const company = body?.company?.trim() || "";
-  const focusAreas = body?.focusAreas?.trim() || "";
+  const role = clampString(body?.role?.trim() || "Software Engineer", 120);
+  const experience = clampString(body?.experience?.trim() || "0-2 years", 40);
+  const type = clampString(body?.type?.trim() || "Mixed", 40);
+  const difficulty = clampString(body?.difficulty?.trim() || "Adaptive", 24);
+  const company = clampString(body?.company?.trim() || "", 80);
+  const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
   const interactionMode = body?.interactionMode === "video" ? "video" : "typing";
   const useResume = body?.useResume !== false;
 

@@ -5,6 +5,8 @@ import {
 } from "@/lib/prompts";
 import { safeJsonParse } from "@/lib/openai";
 import { llmText } from "@/lib/llm";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { clampString } from "@/lib/validators";
 
 export type Evaluation = {
   technical_score: number;
@@ -49,6 +51,13 @@ function fallbackEvaluation(answer: string): Evaluation {
 }
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "ai:evaluate",
+    limit: 30,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as
     | {
         question?: string;
@@ -63,16 +72,18 @@ export async function POST(request: Request) {
       }
     | null;
 
-  const question = body?.question?.trim() || "";
-  const answer = body?.answer?.trim() || "";
+  const question = clampString(body?.question?.trim() || "", 800);
+  const answer = clampString(body?.answer?.trim() || "", 4000);
   const type = (body?.type || "Technical") as InterviewType;
-  const role = body?.role?.trim() || "";
-  const experience = body?.experience?.trim() || "";
-  const company = body?.company?.trim() || "";
-  const focusAreas = body?.focusAreas?.trim() || "";
-  const resumeText = body?.resumeText?.trim() || "";
+  const role = clampString(body?.role?.trim() || "", 120);
+  const experience = clampString(body?.experience?.trim() || "", 40);
+  const company = clampString(body?.company?.trim() || "", 80);
+  const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
+  const resumeText = clampString(body?.resumeText?.trim() || "", 12000);
 
-  const resumeProfileString = body?.resumeProfile ? JSON.stringify(body.resumeProfile) : "";
+  const resumeProfileString = body?.resumeProfile
+    ? clampString(JSON.stringify(body.resumeProfile), 12000)
+    : "";
   const resumeContext = (resumeProfileString || resumeText).trim();
 
   if (!question || !answer) {

@@ -7,6 +7,8 @@ import {
   type InterviewType,
 } from "@/lib/prompts";
 import { llmText } from "@/lib/llm";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { clampString } from "@/lib/validators";
 
 function fallbackQuestions(type: InterviewType) {
   if (type === "HR") {
@@ -29,6 +31,13 @@ function fallbackQuestions(type: InterviewType) {
 }
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "ai:question",
+    limit: 30,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as
     | {
         type?: InterviewType;
@@ -44,14 +53,14 @@ export async function POST(request: Request) {
 
   const type = (body?.type || "HR") as InterviewType;
   const difficulty = (body?.difficulty || "Medium") as Difficulty;
-  const role = body?.role?.trim() || "Software Engineer";
-  const experience = body?.experience?.trim() || "0-2 years";
-  const company = body?.company?.trim() || "";
-  const focusAreas = body?.focusAreas?.trim() || "";
-  const resumeText = body?.resumeText?.trim() || "";
+  const role = clampString(body?.role?.trim() || "Software Engineer", 120);
+  const experience = clampString(body?.experience?.trim() || "0-2 years", 40);
+  const company = clampString(body?.company?.trim() || "", 80);
+  const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
+  const resumeText = clampString(body?.resumeText?.trim() || "", 12000);
 
   const resumeProfileString = body?.resumeProfile
-    ? JSON.stringify(body.resumeProfile)
+    ? clampString(JSON.stringify(body.resumeProfile), 12000)
     : "";
 
   const resumeContext = (resumeProfileString || resumeText).trim();

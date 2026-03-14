@@ -4,11 +4,14 @@ import {
   interviewSimulatorSystemPrompt,
   type InterviewType,
 } from "@/lib/prompts";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { clampString } from "@/lib/validators";
 
 export type FinalReport = {
   overall_score: number;
   technical_score: number;
   communication_score: number;
+  problem_solving_score: number;
   strengths: string[];
   weaknesses: string[];
   improvement_suggestions: string[];
@@ -32,6 +35,7 @@ function fallbackReport(params: {
   avgOverall: number;
   avgTechnical: number;
   avgCommunication: number;
+  avgProblemSolving: number;
   focusAreas?: string;
 }): FinalReport {
   const strengths: string[] = [];
@@ -47,6 +51,9 @@ function fallbackReport(params: {
 
   if (params.avgCommunication >= 7) strengths.push("Communication was clear and confident.");
   else if (params.avgCommunication <= 4) weaknesses.push("Communication lacked structure or confidence.");
+
+  if (params.avgProblemSolving >= 7) strengths.push("Problem-solving depth and reasoning were strong.");
+  else if (params.avgProblemSolving <= 4) weaknesses.push("Problem-solving steps and trade-offs were often unclear.");
 
   if (weaknesses.length === 0) weaknesses.push("Some answers could be more specific and backed by concrete examples.");
 
@@ -67,6 +74,7 @@ function fallbackReport(params: {
     overall_score: clamp0to10(round1(params.avgOverall)),
     technical_score: clamp0to10(round1(params.avgTechnical)),
     communication_score: clamp0to10(round1(params.avgCommunication)),
+    problem_solving_score: clamp0to10(round1(params.avgProblemSolving)),
     strengths,
     weaknesses,
     improvement_suggestions,
@@ -75,6 +83,13 @@ function fallbackReport(params: {
 }
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "ai:report",
+    limit: 10,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as
     | {
         turns?: Array<{
@@ -85,6 +100,7 @@ export async function POST(request: Request) {
             technical_score?: number;
             clarity_score?: number;
             confidence_score?: number;
+            depth_score?: number;
           };
         }>;
         type?: InterviewType;
@@ -95,12 +111,12 @@ export async function POST(request: Request) {
       }
     | null;
 
-  const turns = Array.isArray(body?.turns) ? body!.turns : [];
+  const turns = Array.isArray(body?.turns) ? body!.turns.slice(0, 50) : [];
   const type = (body?.type || "Technical") as InterviewType;
-  const role = body?.role?.trim() || "";
-  const experience = body?.experience?.trim() || "";
-  const company = body?.company?.trim() || "";
-  const focusAreas = body?.focusAreas?.trim() || "";
+  const role = clampString(body?.role?.trim() || "", 120);
+  const experience = clampString(body?.experience?.trim() || "", 40);
+  const company = clampString(body?.company?.trim() || "", 80);
+  const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
 
   const evals = turns
     .map((t) => t.evaluation)
@@ -110,10 +126,12 @@ export async function POST(request: Request) {
   const technicalScores = evals.map((e) => Number(e.technical_score ?? 0)).filter((n) => Number.isFinite(n));
   const clarityScores = evals.map((e) => Number(e.clarity_score ?? 0)).filter((n) => Number.isFinite(n));
   const confidenceScores = evals.map((e) => Number(e.confidence_score ?? 0)).filter((n) => Number.isFinite(n));
+  const depthScores = evals.map((e) => Number(e.depth_score ?? 0)).filter((n) => Number.isFinite(n));
 
   const avgOverall = mean(overallScores);
   const avgTechnical = mean(technicalScores);
   const avgCommunication = mean([...clarityScores, ...confidenceScores]);
+  const avgProblemSolving = mean(depthScores);
 
   if (turns.length === 0) {
     return Response.json(
@@ -132,6 +150,7 @@ export async function POST(request: Request) {
     '  "overall_score": number,',
     '  "technical_score": number,',
     '  "communication_score": number,',
+    '  "problem_solving_score": number,',
     '  "strengths": string[],',
     '  "weaknesses": string[],',
     '  "improvement_suggestions": string[],',
@@ -151,6 +170,7 @@ export async function POST(request: Request) {
     `Average overall score: ${round1(avgOverall)}/10`,
     `Average technical score: ${round1(avgTechnical)}/10`,
     `Average communication score (from clarity+confidence): ${round1(avgCommunication)}/10`,
+    `Average problem-solving score (from depth): ${round1(avgProblemSolving)}/10`,
     "",
     "Transcript (latest first is fine):",
     JSON.stringify(
@@ -188,6 +208,7 @@ export async function POST(request: Request) {
       avgOverall,
       avgTechnical,
       avgCommunication,
+      avgProblemSolving,
       focusAreas,
     }),
     source: "fallback",

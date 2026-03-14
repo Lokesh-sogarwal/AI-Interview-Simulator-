@@ -379,7 +379,7 @@ export default function InterviewSetupClient() {
               Choose Upload for resume-based questions, or Default to start without a resume.
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row">
+            {/* <div className="flex flex-col gap-2 sm:flex-row">
               <label className="inline-flex items-center gap-2">
                 <input
                   type="radio"
@@ -400,7 +400,7 @@ export default function InterviewSetupClient() {
                 />
                 <span className="text-sm">Default (no resume)</span>
               </label>
-            </div>
+            </div> */}
 
             <label className="block cursor-pointer rounded-2xl border border-dashed border-foreground/25 p-4 transition-opacity hover:opacity-95">
               <input

@@ -1,5 +1,7 @@
 import { safeJsonParse } from "@/lib/openai";
 import { llmText } from "@/lib/llm";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { clampString } from "@/lib/validators";
 
 export type ResumeProfile = {
   summary: string;
@@ -227,6 +229,13 @@ function fallbackExtractProfile(resumeText: string): ResumeProfile {
 }
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, {
+    keyPrefix: "resume:profile",
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+  });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as
     | {
         resumeText?: string;
@@ -235,9 +244,9 @@ export async function POST(request: Request) {
       }
     | null;
 
-  const resumeText = body?.resumeText?.trim() || "";
-  const role = body?.role?.trim() || "";
-  const experience = body?.experience?.trim() || "";
+  const resumeText = clampString(body?.resumeText?.trim() || "", 15000);
+  const role = clampString(body?.role?.trim() || "", 120);
+  const experience = clampString(body?.experience?.trim() || "", 40);
 
   if (!resumeText) {
     return Response.json(

@@ -153,6 +153,8 @@ export default function InterviewClient() {
   const [lastViolation, setLastViolation] = useState<string>("");
   const lastFaceViolationAtRef = useRef<number>(0);
   const lastSpokenQuestionRef = useRef<string>("");
+  const warnedNoFullscreenRef = useRef(false);
+  const pauseWarnedQuestionRef = useRef<string>("");
 
   const recordViolation = useCallback((reason: string) => {
     setViolations((v) => v + 1);
@@ -295,6 +297,7 @@ export default function InterviewClient() {
     if (interactionMode !== "video") return;
     setVoiceEnabled(true);
     setVideoEnabled(true);
+    setProctorEnabled(true);
   }, [interactionMode]);
 
   useEffect(() => {
@@ -535,9 +538,29 @@ export default function InterviewClient() {
   function proctorGateOk() {
     if (!proctorEnabled) return true;
     if (document.fullscreenElement) return true;
-    setMessage("Proctor mode is ON. Enter fullscreen to continue.");
-    return false;
+    if (!warnedNoFullscreenRef.current) {
+      warnedNoFullscreenRef.current = true;
+      setMessage("Proctor mode is ON. For best results, consider fullscreen.");
+    }
+    return true;
   }
+
+  useEffect(() => {
+    if (interactionMode !== "video") return;
+    if (!proctorEnabled) return;
+    if (!question.trim()) return;
+    if (status !== "idle") return;
+    if (answer.trim()) return;
+    if (pauseWarnedQuestionRef.current === question) return;
+
+    const id = window.setTimeout(() => {
+      if (pauseWarnedQuestionRef.current === question) return;
+      pauseWarnedQuestionRef.current = question;
+      recordViolation("Long pause detected. Please continue when ready.");
+    }, 75000);
+
+    return () => window.clearTimeout(id);
+  }, [interactionMode, proctorEnabled, question, status, answer, recordViolation]);
 
   useEffect(() => {
     if (!voiceEnabled) {
@@ -602,7 +625,7 @@ export default function InterviewClient() {
     if (!proctorGateOk()) return;
 
     setStatus("loading");
-    setMessage("Generating a question…");
+    setMessage(interactionMode === "video" ? "Interviewer is preparing the next question…" : "Generating a question…");
 
     // Create DB session as early as possible (non-blocking).
     void ensureInterviewSession();
@@ -748,7 +771,8 @@ export default function InterviewClient() {
       return;
     }
 
-    setMessage("Answer saved.");
+    setMessage("Thanks. Next question…");
+    await getNextQuestion();
   }
 
   async function finishInterview(forceTurns?: Turn[]) {
@@ -857,128 +881,85 @@ export default function InterviewClient() {
           </div>
         </a>
 
-        <a
-          href="/feedback"
-          className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
-        >
-          View feedback
-        </a>
+        {interactionMode === "typing" || status === "done" ? (
+          <a
+            href="/feedback"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
+          >
+            View feedback
+          </a>
+        ) : (
+          <a
+            href="/dashboard"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
+          >
+            Dashboard
+          </a>
+        )}
       </header>
 
       <main className="mx-auto w-full max-w-6xl px-6 pb-14">
-        <section className="grid gap-6 md:grid-cols-2">
-          <div className="rounded-3xl border border-foreground/10 bg-background p-6">
-            <h1 className="text-xl font-semibold tracking-tight">Setup</h1>
-
-            <div className="mt-5 grid gap-4">
-              <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium">Practice mode</div>
-                    <div className="text-sm text-foreground/70">
-                      {interactionMode === "video"
-                        ? "Video call (voice): webcam + spoken answers"
-                        : "Typing practice"}
-                    </div>
-                  </div>
+        {interactionMode === "video" ? (
+          <section className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-3xl border border-foreground/10 bg-background p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h1 className="text-xl font-semibold tracking-tight">Candidate</h1>
+                  <div className="mt-1 text-sm text-foreground/70">Your camera and response</div>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() =>
-                      setInteractionMode((m) => (m === "typing" ? "video" : "typing"))
-                    }
+                    onClick={() => setVideoEnabled((v) => !v)}
                     className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
                   >
-                    Switch
+                    {videoEnabled ? "Camera: On" : "Camera: Off"}
                   </button>
-                </div>
-              </div>
-
-              <label className="grid gap-2">
-                <span className="text-sm font-medium">Interview type</span>
-                <select
-                  value={type}
-                  onChange={(e) => setType(e.target.value as InterviewType)}
-                  className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
-                >
-                  <option value="HR">HR</option>
-                  <option value="Technical">Technical</option>
-                  <option value="Mixed">Mixed</option>
-                </select>
-              </label>
-
-              <label className="grid gap-2">
-                <span className="text-sm font-medium">Role</span>
-                <input
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
-                  placeholder="Software Engineer"
-                />
-              </label>
-
-              <label className="grid gap-2">
-                <span className="text-sm font-medium">Experience</span>
-                <input
-                  value={experience}
-                  onChange={(e) => setExperience(e.target.value)}
-                  className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
-                  placeholder="0-2 years"
-                />
-              </label>
-
-              <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium">Resume-based questions</div>
-                    <div className="text-sm text-foreground/70">
-                      {resumeText ? "Resume loaded" : "No resume found (upload on home page)"}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setUseResume((v) => !v)}
-                    disabled={!resumeText}
-                    className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                  >
-                    {useResume ? "On" : "Off"}
-                  </button>
-                </div>
-                {useResume && resumeText ? (
-                  <div className="mt-3 text-sm text-foreground/70">
-                    {resumeProfile
-                      ? `Using skills: ${(resumeProfile.hard_skills || []).slice(0, 6).join(", ") || "(none detected)"}`
-                      : "Reading your resume to extract skills…"}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="grid gap-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Difficulty</span>
-                  <span className="text-sm text-foreground/70">{difficulty}</span>
-                </div>
-                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] px-4 py-3 text-sm text-foreground/70">
-                  Adaptive based on your answers.
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium">Voice input</div>
-                    <div className="text-sm text-foreground/70">Optional dictation (browser support required)</div>
-                  </div>
                   <button
                     type="button"
                     onClick={() => setVoiceEnabled((v) => !v)}
                     className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
                   >
-                    {voiceEnabled ? "Disable" : "Enable"}
+                    {voiceEnabled ? "Voice: On" : "Voice: Off"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !proctorEnabled;
+                      setProctorEnabled(next);
+                      if (next) {
+                        setViolations(0);
+                        setLastViolation("");
+                        warnedNoFullscreenRef.current = false;
+                      }
+                    }}
+                    className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
+                  >
+                    {proctorEnabled ? "Proctor: On" : "Proctor: Off"}
                   </button>
                 </div>
+              </div>
 
-                {voiceEnabled ? (
-                  <div className="mt-3">
+              <div className="mt-4 overflow-hidden rounded-2xl border border-foreground/10 bg-background">
+                <div className="flex items-center justify-between gap-3 border-b border-foreground/10 px-4 py-2 text-xs text-foreground/70">
+                  <div>Your camera</div>
+                  {proctorEnabled ? (
+                    <button
+                      type="button"
+                      onClick={ensureFullscreen}
+                      className="inline-flex h-8 items-center justify-center rounded-full border border-foreground/15 px-3 text-xs font-medium transition-opacity hover:opacity-90"
+                    >
+                      Fullscreen
+                    </button>
+                  ) : null}
+                </div>
+                <video ref={videoRef} autoPlay playsInline muted className="aspect-video w-full bg-black" />
+              </div>
+
+              <div className="mt-5 grid gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm font-medium">Your response</div>
+                  {voiceEnabled ? (
                     <button
                       type="button"
                       onClick={toggleListening}
@@ -986,178 +967,98 @@ export default function InterviewClient() {
                     >
                       {listening ? "Stop listening" : "Start listening"}
                     </button>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium">Video mode</div>
-                    <div className="text-sm text-foreground/70">Show your webcam while answering</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setVideoEnabled((v) => !v)}
-                    className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
-                  >
-                    {videoEnabled ? "Disable" : "Enable"}
-                  </button>
+                  ) : null}
                 </div>
-              </div>
 
-              <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium">Proctor mode</div>
-                    <div className="text-sm text-foreground/70">Tracks tab-switching and blocks copy/paste</div>
-                  </div>
+                <textarea
+                  value={answer}
+                  onChange={(e) => setAnswer(e.target.value)}
+                  rows={7}
+                  disabled={status === "loading" || status === "evaluating" || status === "done"}
+                  className="w-full resize-none rounded-2xl border border-foreground/15 bg-background px-4 py-3 text-sm outline-none focus:border-foreground/30 disabled:opacity-60"
+                  placeholder="Respond naturally as you would in a live interview…"
+                />
+
+                <div className="flex flex-col gap-2 sm:flex-row">
                   <button
                     type="button"
-                    onClick={async () => {
-                      const next = !proctorEnabled;
-                      setProctorEnabled(next);
-                      if (next) {
-                        setViolations(0);
-                        setLastViolation("");
-                        await ensureFullscreen();
-                      }
-                    }}
-                    className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
+                    onClick={submitAnswer}
+                    disabled={status === "loading" || status === "evaluating" || status === "done"}
+                    className="inline-flex h-11 flex-1 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
                   >
-                    {proctorEnabled ? "On" : "Off"}
+                    {status === "evaluating" ? "Submitting…" : status === "done" ? "Interview complete" : "Submit response"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void finishInterview()}
+                    disabled={status === "loading" || status === "evaluating" || status === "done" || turns.length === 0}
+                    className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                  >
+                    End interview
                   </button>
                 </div>
 
                 {proctorEnabled ? (
-                  <div className="mt-3 grid gap-2 text-sm text-foreground/70">
-                    <div>Violations: {violations}{lastViolation ? ` (last: ${lastViolation})` : ""}</div>
-                    <button
-                      type="button"
-                      onClick={ensureFullscreen}
-                      className="inline-flex h-10 w-fit items-center justify-center rounded-full bg-foreground px-4 text-sm font-medium text-background transition-opacity hover:opacity-90"
-                    >
-                      Enter fullscreen
-                    </button>
+                  <div className="text-sm text-foreground/70">
+                    Proctoring: {violations} warning(s){lastViolation ? ` (last: ${lastViolation})` : ""}
                   </div>
                 ) : null}
-              </div>
 
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={getNextQuestion}
-                  disabled={status === "loading" || status === "evaluating" || status === "done"}
-                  className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                >
-                  {question ? "New question" : "Generate question"}
-                </button>
-                <a
-                  href="/dashboard"
-                  className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
-                >
-                  Dashboard
-                </a>
-              </div>
-
-              <div className="text-sm text-foreground/70" aria-live="polite">
-                {message}
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-3xl border border-foreground/10 bg-background p-6">
-            <h2 className="text-xl font-semibold tracking-tight">Question</h2>
-            <div className={videoEnabled ? "mt-4 grid gap-3 md:grid-cols-2" : "mt-4"}>
-              <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
-                {question || "Generate a question to begin."}
-              </div>
-
-              {videoEnabled ? (
-                <div className="overflow-hidden rounded-2xl border border-foreground/10 bg-background">
-                  <div className="border-b border-foreground/10 px-4 py-2 text-xs text-foreground/70">Your camera</div>
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="aspect-video w-full bg-black"
-                  />
+                <div className="text-sm text-foreground/70" aria-live="polite">
+                  {message || "Answer when ready. One question at a time."}
                 </div>
-              ) : null}
+              </div>
             </div>
 
-            <div className="mt-5 grid gap-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Your answer</div>
-                <div className="text-xs text-foreground/60">Fillers: {fillerCount}</div>
+            <div className="rounded-3xl border border-foreground/10 bg-background p-6">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-xl font-semibold tracking-tight">AI interviewer</h2>
+                <div className="text-sm text-foreground/70">
+                  {role} · {type} · {difficulty}
+                </div>
               </div>
 
-              <textarea
-                value={answer}
-                onChange={(e) => setAnswer(e.target.value)}
-                rows={7}
-                className="w-full resize-none rounded-2xl border border-foreground/15 bg-background px-4 py-3 text-sm outline-none focus:border-foreground/30"
-                placeholder="Type your answer here…"
-              />
-
-              <button
-                type="button"
-                onClick={submitAnswer}
-                disabled={status === "loading" || status === "evaluating" || status === "done"}
-                className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-              >
-                {status === "evaluating" ? "Evaluating…" : status === "done" ? "Interview complete" : "Submit answer"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => void finishInterview()}
-                disabled={status === "loading" || status === "evaluating" || status === "done" || turns.length === 0}
-                className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-              >
-                Finish interview
-              </button>
-
-              {interactionMode === "typing" && turns.length > 0 ? (
-                <div className="mt-2 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
-                  <div className="text-sm font-medium">Feedback (last answer)</div>
-                  <div className="mt-2 grid gap-2">
-                    <div>
-                      <span className="font-medium">Overall:</span> {turns[turns.length - 1].evaluation.overall_score}/10
-                      {" · "}
-                      <span className="font-medium">Technical:</span> {turns[turns.length - 1].evaluation.technical_score}/10
-                      {" · "}
-                      <span className="font-medium">Clarity:</span> {turns[turns.length - 1].evaluation.clarity_score}/10
-                      {" · "}
-                      <span className="font-medium">Confidence:</span> {turns[turns.length - 1].evaluation.confidence_score}/10
-                      {" · "}
-                      <span className="font-medium">Depth:</span> {turns[turns.length - 1].evaluation.depth_score}/10
-                    </div>
-
-                    <div>
-                      <span className="font-medium">Strengths:</span> {turns[turns.length - 1].evaluation.strengths}
-                    </div>
-                    <div>
-                      <span className="font-medium">Weaknesses:</span> {turns[turns.length - 1].evaluation.weaknesses}
-                    </div>
-                    <div>
-                      <span className="font-medium">Improve:</span> {turns[turns.length - 1].evaluation.improvement}
-                    </div>
-                    <div>
-                      <span className="font-medium">Follow-up:</span> {turns[turns.length - 1].evaluation.follow_up_question}
-                    </div>
+              <div className="mt-4 overflow-hidden rounded-2xl border border-foreground/10 bg-background">
+                <div className="border-b border-foreground/10 px-4 py-2 text-xs text-foreground/70">Interviewer</div>
+                <div className="flex aspect-video items-center justify-center gap-3 bg-foreground/[0.03] p-6">
+                  <div className="flex size-12 items-center justify-center rounded-xl bg-foreground text-background">
+                    <span className="text-sm font-semibold">AI</span>
                   </div>
+                  <div className="text-sm text-foreground/80">
+                    {status === "loading"
+                      ? "Preparing the next question…"
+                      : status === "evaluating"
+                        ? "Listening and taking notes…"
+                        : question
+                          ? "Please answer when you’re ready."
+                          : "Click Start to begin."}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                {question || "This interview will run one question at a time."}
+              </div>
+
+              {!question && status !== "done" ? (
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={getNextQuestion}
+                    disabled={status === "loading" || status === "evaluating"}
+                    className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                  >
+                    Start interview
+                  </button>
                 </div>
               ) : null}
 
               {status === "done" ? (
                 <>
-                  <div className="mt-2 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
-                    <div className="text-sm font-medium">Report card</div>
+                  <div className="mt-4 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                    <div className="text-sm font-medium">Final evaluation</div>
                     <div className="mt-2">
-                      <span className="font-medium">Average overall:</span>{" "}
-                      {averageOverall ?? "—"}/10
+                      <span className="font-medium">Average overall:</span> {averageOverall ?? "—"}/10
                     </div>
 
                     {finalReport ? (
@@ -1168,6 +1069,8 @@ export default function InterviewClient() {
                           <span className="font-medium">Technical:</span> {finalReport.technical_score}/10
                           {" · "}
                           <span className="font-medium">Communication:</span> {finalReport.communication_score}/10
+                          {" · "}
+                          <span className="font-medium">Problem-solving:</span> {finalReport.problem_solving_score}/10
                         </div>
                         <div>
                           <span className="font-medium">Strengths:</span> {finalReport.strengths.join(" ")}
@@ -1180,7 +1083,7 @@ export default function InterviewClient() {
                         </div>
                         {finalReport.recommended_focus_areas.length > 0 ? (
                           <div>
-                            <span className="font-medium">Focus areas:</span> {finalReport.recommended_focus_areas.join(", ")}
+                            <span className="font-medium">Recommended focus areas:</span> {finalReport.recommended_focus_areas.join(", ")}
                           </div>
                         ) : null}
                       </div>
@@ -1189,21 +1092,305 @@ export default function InterviewClient() {
                     )}
                   </div>
 
-                  <a
-                    href="/feedback"
-                    className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
-                  >
-                    Go to feedback
-                  </a>
+                  <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                    <a
+                      href="/feedback"
+                      className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
+                    >
+                      View feedback
+                    </a>
+                    {interviewId ? (
+                      <a
+                        href={`/dashboard/interviews/${interviewId}`}
+                        className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-90"
+                      >
+                        View full report
+                      </a>
+                    ) : null}
+                  </div>
                 </>
               ) : null}
+            </div>
+          </section>
+        ) : (
+          <section className="grid gap-6 md:grid-cols-2">
+            <div className="rounded-3xl border border-foreground/10 bg-background p-6">
+              <h1 className="text-xl font-semibold tracking-tight">Setup</h1>
 
-              <div className="text-sm text-foreground/70">
-                Resume detected: {resumeText ? "Yes" : "No"}
+              <div className="mt-5 grid gap-4">
+                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Practice mode</div>
+                      <div className="text-sm text-foreground/70">Typing practice</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setInteractionMode("video")}
+                      className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
+                    >
+                      Switch to video
+                    </button>
+                  </div>
+                </div>
+
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium">Interview type</span>
+                  <select
+                    value={type}
+                    onChange={(e) => setType(e.target.value as InterviewType)}
+                    className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
+                  >
+                    <option value="HR">HR</option>
+                    <option value="Technical">Technical</option>
+                    <option value="Mixed">Mixed</option>
+                  </select>
+                </label>
+
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium">Role</span>
+                  <input
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                    className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
+                    placeholder="Software Engineer"
+                  />
+                </label>
+
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium">Experience</span>
+                  <input
+                    value={experience}
+                    onChange={(e) => setExperience(e.target.value)}
+                    className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
+                    placeholder="0-2 years"
+                  />
+                </label>
+
+                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Resume-based questions</div>
+                      <div className="text-sm text-foreground/70">
+                        {resumeText ? "Resume loaded" : "No resume found (upload on home page)"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setUseResume((v) => !v)}
+                      disabled={!resumeText}
+                      className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                    >
+                      {useResume ? "On" : "Off"}
+                    </button>
+                  </div>
+                  {useResume && resumeText ? (
+                    <div className="mt-3 text-sm text-foreground/70">
+                      {resumeProfile
+                        ? `Using skills: ${(resumeProfile.hard_skills || []).slice(0, 6).join(", ") || "(none detected)"}`
+                        : "Reading your resume to extract skills…"}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Difficulty</span>
+                    <span className="text-sm text-foreground/70">{difficulty}</span>
+                  </div>
+                  <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] px-4 py-3 text-sm text-foreground/70">
+                    Adaptive based on your answers.
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Voice input</div>
+                      <div className="text-sm text-foreground/70">Optional dictation (browser support required)</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setVoiceEnabled((v) => !v)}
+                      className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
+                    >
+                      {voiceEnabled ? "Disable" : "Enable"}
+                    </button>
+                  </div>
+
+                  {voiceEnabled ? (
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={toggleListening}
+                        className="inline-flex h-10 items-center justify-center rounded-full bg-foreground px-4 text-sm font-medium text-background transition-opacity hover:opacity-90"
+                      >
+                        {listening ? "Stop listening" : "Start listening"}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={getNextQuestion}
+                    disabled={status === "loading" || status === "evaluating" || status === "done"}
+                    className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                  >
+                    {question ? "New question" : "Generate question"}
+                  </button>
+                  <a
+                    href="/dashboard"
+                    className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
+                  >
+                    Dashboard
+                  </a>
+                </div>
+
+                <div className="text-sm text-foreground/70" aria-live="polite">
+                  {message}
+                </div>
               </div>
             </div>
-          </div>
-        </section>
+
+            <div className="rounded-3xl border border-foreground/10 bg-background p-6">
+              <h2 className="text-xl font-semibold tracking-tight">Question</h2>
+              <div className="mt-4">
+                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                  {question || "Generate a question to begin."}
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium">Your answer</div>
+                  <div className="text-xs text-foreground/60">Fillers: {fillerCount}</div>
+                </div>
+
+                <textarea
+                  value={answer}
+                  onChange={(e) => setAnswer(e.target.value)}
+                  rows={7}
+                  className="w-full resize-none rounded-2xl border border-foreground/15 bg-background px-4 py-3 text-sm outline-none focus:border-foreground/30"
+                  placeholder="Type your answer here…"
+                />
+
+                <button
+                  type="button"
+                  onClick={submitAnswer}
+                  disabled={status === "loading" || status === "evaluating" || status === "done"}
+                  className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                >
+                  {status === "evaluating" ? "Evaluating…" : status === "done" ? "Interview complete" : "Submit answer"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void finishInterview()}
+                  disabled={status === "loading" || status === "evaluating" || status === "done" || turns.length === 0}
+                  className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                >
+                  Finish interview
+                </button>
+
+                {interactionMode === "typing" && turns.length > 0 ? (
+                  <div className="mt-2 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                    <div className="text-sm font-medium">Feedback (last answer)</div>
+                    <div className="mt-2 grid gap-2">
+                      <div>
+                        <span className="font-medium">Overall:</span> {turns[turns.length - 1].evaluation.overall_score}/10
+                        {" · "}
+                        <span className="font-medium">Technical:</span> {turns[turns.length - 1].evaluation.technical_score}/10
+                        {" · "}
+                        <span className="font-medium">Clarity:</span> {turns[turns.length - 1].evaluation.clarity_score}/10
+                        {" · "}
+                        <span className="font-medium">Confidence:</span> {turns[turns.length - 1].evaluation.confidence_score}/10
+                        {" · "}
+                        <span className="font-medium">Depth:</span> {turns[turns.length - 1].evaluation.depth_score}/10
+                      </div>
+
+                      <div>
+                        <span className="font-medium">Strengths:</span> {turns[turns.length - 1].evaluation.strengths}
+                      </div>
+                      <div>
+                        <span className="font-medium">Weaknesses:</span> {turns[turns.length - 1].evaluation.weaknesses}
+                      </div>
+                      <div>
+                        <span className="font-medium">Improve:</span> {turns[turns.length - 1].evaluation.improvement}
+                      </div>
+                      <div>
+                        <span className="font-medium">Follow-up:</span> {turns[turns.length - 1].evaluation.follow_up_question}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {status === "done" ? (
+                  <>
+                    <div className="mt-2 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                      <div className="text-sm font-medium">Report card</div>
+                      <div className="mt-2">
+                        <span className="font-medium">Average overall:</span>{" "}
+                        {averageOverall ?? "—"}/10
+                      </div>
+
+                      {finalReport ? (
+                        <div className="mt-3 grid gap-3">
+                          <div>
+                            <span className="font-medium">Overall:</span> {finalReport.overall_score}/10
+                            {" · "}
+                            <span className="font-medium">Technical:</span> {finalReport.technical_score}/10
+                            {" · "}
+                            <span className="font-medium">Communication:</span> {finalReport.communication_score}/10
+                            {" · "}
+                            <span className="font-medium">Problem-solving:</span> {finalReport.problem_solving_score}/10
+                          </div>
+                          <div>
+                            <span className="font-medium">Strengths:</span> {finalReport.strengths.join(" ")}
+                          </div>
+                          <div>
+                            <span className="font-medium">Weaknesses:</span> {finalReport.weaknesses.join(" ")}
+                          </div>
+                          <div>
+                            <span className="font-medium">Improvements:</span> {finalReport.improvement_suggestions.join(" ")}
+                          </div>
+                          {finalReport.recommended_focus_areas.length > 0 ? (
+                            <div>
+                              <span className="font-medium">Focus areas:</span> {finalReport.recommended_focus_areas.join(", ")}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="mt-3 text-sm text-foreground/70">Could not generate an AI report. Average score is still shown.</div>
+                      )}
+                    </div>
+
+                    <a
+                      href="/feedback"
+                      className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
+                    >
+                      Go to feedback
+                    </a>
+
+                    {interviewId ? (
+                      <a
+                        href={`/dashboard/interviews/${interviewId}`}
+                        className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-90"
+                      >
+                        View full report
+                      </a>
+                    ) : null}
+                  </>
+                ) : null}
+
+                <div className="text-sm text-foreground/70">
+                  Resume detected: {resumeText ? "Yes" : "No"}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
