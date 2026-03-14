@@ -8,8 +8,8 @@ import { isValidEmail, isValidPassword } from "@/lib/validators";
 export async function POST(request: Request) {
   const rl = rateLimit(request, {
     keyPrefix: "auth:signup",
-    limit: 5,
-    windowMs: 30 * 60 * 1000,
+    limit: 6,
+    windowMs: 10 * 60 * 1000,
   });
   if (!rl.ok) return rateLimitResponse(rl.resetAt);
 
@@ -29,10 +29,7 @@ export async function POST(request: Request) {
   }
 
   if (name.length > 80) {
-    return Response.json(
-      { ok: false, error: "Name is too long." },
-      { status: 400 },
-    );
+    return Response.json({ ok: false, error: "Name is too long." }, { status: 400 });
   }
 
   if (!isValidEmail(email)) {
@@ -41,7 +38,7 @@ export async function POST(request: Request) {
 
   if (!isValidPassword(password)) {
     return Response.json(
-      { ok: false, error: "Password must be 8-72 characters." },
+      { ok: false, error: "Password must be at least 8 characters." },
       { status: 400 },
     );
   }

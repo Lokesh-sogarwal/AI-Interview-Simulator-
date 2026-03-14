@@ -50,11 +50,19 @@ export async function POST(
     | {
         averageScore?: number;
         finalReport?: unknown;
+        endedReason?: string;
+        proctoring?: {
+          violations?: number;
+          lastViolation?: string;
+        };
       }
     | null;
 
   const now = new Date();
   const interviews = db.collection<any>("interviews");
+  const endedReason = typeof body?.endedReason === "string" ? body.endedReason.trim().slice(0, 80) : "";
+  const status = endedReason === "proctor_violations" ? "terminated" : "completed";
+
   const update = await interviews.updateOne(
     {
       _id: new ObjectId(id),
@@ -62,11 +70,22 @@ export async function POST(
     },
     {
       $set: {
-        status: "completed",
+        status,
         completedAt: now,
         updatedAt: now,
         averageScore: typeof body?.averageScore === "number" ? body.averageScore : null,
         finalReport: body?.finalReport ?? null,
+        endedReason: endedReason || null,
+        proctoring: body?.proctoring
+          ? {
+              violations:
+                typeof body.proctoring.violations === "number" ? body.proctoring.violations : null,
+              lastViolation:
+                typeof body.proctoring.lastViolation === "string"
+                  ? body.proctoring.lastViolation.slice(0, 200)
+                  : null,
+            }
+          : null,
       },
     } as any,
   );
