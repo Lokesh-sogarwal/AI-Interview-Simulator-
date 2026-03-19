@@ -96,7 +96,9 @@ export default function AuthedHome() {
             </header>
 
             <main className="mx-auto w-full max-w-6xl px-6 pb-14">
-                <section className="grid gap-10 py-10 md:grid-cols-2 md:items-center">
+                <section className="relative grid gap-10 py-10 md:grid-cols-2 md:items-center">
+                    <div className="pointer-events-none absolute inset-x-0 -top-6 h-[420px] aisim-hero-glow" />
+
                     <div className="flex flex-col gap-5">
                         <div className="inline-flex w-fit items-center gap-2 rounded-full border border-foreground/15 px-3 py-1 text-xs text-foreground/80">
                             <span className="font-medium text-foreground">AI HR Interview</span>
@@ -142,41 +144,55 @@ export default function AuthedHome() {
                         </div>
                     </div>
 
-                    <div className="rounded-3xl border border-foreground/10 bg-background p-6">
-                        <div className="flex items-center justify-between gap-4">
-                            <div>
-                                <div className="text-sm font-medium">How it works</div>
-                                <div className="text-sm text-foreground/70">Three simple steps</div>
-                            </div>
-                            <Image src="/window.svg" alt="" width={28} height={28} className="opacity-80" />
-                        </div>
+                    <div className="aisim-3d-scene">
+                        <div className="relative">
+                            <div className="absolute -left-4 top-10 hidden w-[92%] rounded-3xl border border-foreground/10 bg-foreground/[0.02] p-6 md:block"
+                                style={{ transform: "rotateX(10deg) rotateY(-12deg) translateZ(-30px)" }}
+                            />
+                            <div className="absolute -right-3 top-28 hidden w-[88%] rounded-3xl border border-foreground/10 bg-foreground/[0.02] p-6 md:block"
+                                style={{ transform: "rotateX(10deg) rotateY(14deg) translateZ(-50px)" }}
+                            />
 
-                        <div className="mt-6 grid gap-4">
-                            <div className="flex gap-4 rounded-2xl border border-foreground/10 p-4">
-                                <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-sm font-semibold text-background">
-                                    1
+                            <div
+                                className="relative rounded-3xl border border-foreground/10 bg-background p-6 aisim-3d-card aisim-float"
+                                style={{ transform: "rotateX(6deg) rotateY(-8deg)" }}
+                            >
+                                <div className="flex items-center justify-between gap-4">
+                                    <div>
+                                        <div className="text-sm font-medium">How it works</div>
+                                        <div className="text-sm text-foreground/70">Three simple steps</div>
+                                    </div>
+                                    <Image src="/window.svg" alt="" width={28} height={28} className="opacity-80" />
                                 </div>
-                                <div>
-                                    <div className="text-sm font-medium">Submit your resume</div>
-                                    <div className="text-sm text-foreground/70">We use it to tailor the interview.</div>
-                                </div>
-                            </div>
-                            <div className="flex gap-4 rounded-2xl border border-foreground/10 p-4">
-                                <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-sm font-semibold text-background">
-                                    2
-                                </div>
-                                <div>
-                                    <div className="text-sm font-medium">Take the AI interview</div>
-                                    <div className="text-sm text-foreground/70">Answer HR-style questions.</div>
-                                </div>
-                            </div>
-                            <div className="flex gap-4 rounded-2xl border border-foreground/10 p-4">
-                                <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-sm font-semibold text-background">
-                                    3
-                                </div>
-                                <div>
-                                    <div className="text-sm font-medium">Get feedback</div>
-                                    <div className="text-sm text-foreground/70">Save results to your dashboard.</div>
+
+                                <div className="mt-6 grid gap-4">
+                                    <div className="flex gap-4 rounded-2xl border border-foreground/10 bg-foreground/[0.02] p-4 transition-transform duration-300 hover:-translate-y-0.5">
+                                        <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-sm font-semibold text-background">
+                                            1
+                                        </div>
+                                        <div>
+                                            <div className="text-sm font-medium">Submit your resume</div>
+                                            <div className="text-sm text-foreground/70">We use it to tailor the interview.</div>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-4 rounded-2xl border border-foreground/10 bg-foreground/[0.02] p-4 transition-transform duration-300 hover:-translate-y-0.5">
+                                        <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-sm font-semibold text-background">
+                                            2
+                                        </div>
+                                        <div>
+                                            <div className="text-sm font-medium">Take the AI interview</div>
+                                            <div className="text-sm text-foreground/70">Answer HR-style questions.</div>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-4 rounded-2xl border border-foreground/10 bg-foreground/[0.02] p-4 transition-transform duration-300 hover:-translate-y-0.5">
+                                        <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-sm font-semibold text-background">
+                                            3
+                                        </div>
+                                        <div>
+                                            <div className="text-sm font-medium">Get feedback</div>
+                                            <div className="text-sm text-foreground/70">Save results to your dashboard.</div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

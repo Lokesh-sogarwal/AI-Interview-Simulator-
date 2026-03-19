@@ -13,6 +13,8 @@ export type Evaluation = {
   clarity_score: number;
   confidence_score: number;
   depth_score: number;
+  english_fluency_score: number;
+  project_knowledge_score: number;
   overall_score: number;
   strengths: string;
   weaknesses: string;
@@ -34,6 +36,18 @@ function normalizeEval(e: Evaluation): Evaluation {
   const clarity = clamp0to10(Number(e.clarity_score ?? 0));
   const confidence = clamp0to10(Number(e.confidence_score ?? 0));
   const depth = clamp0to10(Number(e.depth_score ?? 0));
+  const english = clamp0to10(
+    Number(
+      // If missing, approximate from clarity.
+      (e as Partial<Evaluation>).english_fluency_score ?? clarity,
+    ),
+  );
+  const project = clamp0to10(
+    Number(
+      // If missing, approximate from technical/depth.
+      (e as Partial<Evaluation>).project_knowledge_score ?? Math.min(technical, depth),
+    ),
+  );
   const avg = round1((technical + clarity + confidence + depth) / 4);
   let overall = clamp0to10(Number(e.overall_score ?? avg));
 
@@ -52,6 +66,8 @@ function normalizeEval(e: Evaluation): Evaluation {
     clarity_score: clarity,
     confidence_score: confidence,
     depth_score: depth,
+    english_fluency_score: english,
+    project_knowledge_score: project,
     overall_score: overall,
     strengths,
     weaknesses,
@@ -164,6 +180,8 @@ function strictNonsenseEvaluation(): Evaluation {
     clarity_score: 0,
     confidence_score: 0,
     depth_score: 0,
+    english_fluency_score: 0,
+    project_knowledge_score: 0,
     overall_score: 0,
     strengths: "No strengths to assess because no meaningful answer was provided.",
     weaknesses:
@@ -267,6 +285,8 @@ function fallbackEvaluation(answer: string): Evaluation {
   const confidence = clamp0to10(Math.round(Math.min(10, wordCount / 30)));
   const technical = clamp0to10(Math.round(Math.min(10, wordCount / 35)));
   const depth = clamp0to10(Math.round(Math.min(10, wordCount / 40)));
+  const english = clamp0to10(Math.round(Math.min(10, wordCount / 28)));
+  const project = clamp0to10(Math.round(Math.min(10, wordCount / 45)));
   const overall = clamp0to10(Math.round((technical + clarity + confidence + depth) / 4));
 
   return {
@@ -274,6 +294,8 @@ function fallbackEvaluation(answer: string): Evaluation {
     clarity_score: clarity,
     confidence_score: confidence,
     depth_score: depth,
+    english_fluency_score: english,
+    project_knowledge_score: project,
     overall_score: overall,
     strengths: "You provided a structured response with some relevant detail.",
     weaknesses: "Some points could be clearer or more specific.",

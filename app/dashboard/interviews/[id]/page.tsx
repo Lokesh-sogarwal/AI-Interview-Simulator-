@@ -30,10 +30,20 @@ type StoredTurn = {
 };
 
 type StoredFinalReport = {
+  // New schema
+  candidate_summary?: string;
+  technical_knowledge_score?: number;
+  communication_skill_score?: number;
+  confidence_score?: number;
+  problem_solving_score?: number;
+  english_fluency_score?: number;
+  project_knowledge_score?: number;
+  final_recommendation?: "Hire" | "No Hire";
+
+  // Legacy schema (older saved reports)
   overall_score?: number;
   technical_score?: number;
   communication_score?: number;
-  problem_solving_score?: number;
   strengths?: string[];
   weaknesses?: string[];
   improvement_suggestions?: string[];
@@ -216,15 +226,43 @@ export default async function InterviewDetailsPage(props: {
             <div className="mt-3 text-sm text-foreground/70">No final report saved for this interview.</div>
           ) : (
             <div className="mt-3 grid gap-3 text-sm text-foreground/80">
-              <div>
-                <span className="font-medium">Overall:</span> {report.overall_score ?? "—"}/10
-                {" · "}
-                <span className="font-medium">Technical:</span> {report.technical_score ?? "—"}/10
-                {" · "}
-                <span className="font-medium">Communication:</span> {report.communication_score ?? "—"}/10
-                {" · "}
-                <span className="font-medium">Problem-solving:</span> {report.problem_solving_score ?? "—"}/10
-              </div>
+              {report.final_recommendation ? (
+                <div>
+                  <span className="font-medium">Recommendation:</span> {report.final_recommendation}
+                </div>
+              ) : null}
+
+              {typeof report.candidate_summary === "string" && report.candidate_summary.trim() ? (
+                <div>
+                  <span className="font-medium">Candidate summary:</span> {report.candidate_summary}
+                </div>
+              ) : null}
+
+              {typeof report.technical_knowledge_score === "number" || typeof report.communication_skill_score === "number" ? (
+                <div>
+                  <span className="font-medium">Technical knowledge:</span> {report.technical_knowledge_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">Communication:</span> {report.communication_skill_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">Confidence:</span> {report.confidence_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">Problem solving:</span> {report.problem_solving_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">English:</span> {report.english_fluency_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">Project knowledge:</span> {report.project_knowledge_score ?? "—"}/10
+                </div>
+              ) : (
+                <div>
+                  <span className="font-medium">Overall:</span> {report.overall_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">Technical:</span> {report.technical_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">Communication:</span> {report.communication_score ?? "—"}/10
+                  {" · "}
+                  <span className="font-medium">Problem-solving:</span> {report.problem_solving_score ?? "—"}/10
+                </div>
+              )}
               {report.strengths?.length ? (
                 <div>
                   <span className="font-medium">Strengths:</span> {report.strengths.join(" ")}

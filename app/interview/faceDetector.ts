@@ -62,14 +62,28 @@ export async function createFaceDetector(): Promise<FaceDetectorApi | null> {
       minDetectionConfidence: 0.5,
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyDetector = detector as any;
+
     return {
       detect: async (video) => {
         // MediaPipe expects a monotonically increasing timestamp in ms.
         const ts = performance.now();
-        const result = detector.detectForVideo(video, ts);
-        const detections = result?.detections ?? [];
+
+        let result: unknown;
+        if (typeof anyDetector.detectForVideo === "function") {
+          result = anyDetector.detectForVideo(video, ts);
+        } else if (typeof anyDetector.detect === "function") {
+          // Some builds expose only detect(); it may ignore ts.
+          result = anyDetector.detect(video, ts);
+        } else {
+          return [];
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const detections: any[] = (result as any)?.detections ?? [];
         const boxes = detections
-          .map((d) => {
+          .map((d: any) => {
             const bb = d.boundingBox;
             if (!bb) return null;
             return {
@@ -79,14 +93,15 @@ export async function createFaceDetector(): Promise<FaceDetectorApi | null> {
               height: bb.height ?? 0,
             } satisfies FaceBox;
           })
-          .filter((b): b is FaceBox => b !== null)
-          .filter((b) => b.width > 0 && b.height > 0);
+          .filter((b: FaceBox | null): b is FaceBox => b !== null)
+          .filter((b: FaceBox) => b.width > 0 && b.height > 0);
 
         return boxes;
       },
       dispose: () => {
         try {
-          detector.close();
+          if (typeof anyDetector.close === "function") anyDetector.close();
+          else if (typeof anyDetector.dispose === "function") anyDetector.dispose();
         } catch {
           // ignore
         }

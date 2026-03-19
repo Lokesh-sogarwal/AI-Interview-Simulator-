@@ -24,3 +24,55 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.aisim-3d-scene {
+  perspective: 1000px;
+  transform-style: preserve-3d;
+}
+
+.aisim-3d-card {
+  transform: translateZ(0);
+  transform-style: preserve-3d;
+}
+
+.aisim-hero-glow {
+  background:
+    radial-gradient(
+      900px 450px at 20% 15%,
+      color-mix(in srgb, var(--foreground) 12%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      700px 420px at 80% 35%,
+      color-mix(in srgb, var(--foreground) 9%, transparent),
+      transparent 60%
+    );
+  filter: blur(1px);
+  opacity: 0.85;
+}
+
+@keyframes aisim-float {
+  0% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+  100% {
+    transform: translateY(0px);
+  }
+}
+
+.aisim-float {
+  animation: aisim-float 3.6s ease-in-out infinite;
+}
+
+@keyframes aisim-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.aisim-spin {
+  animation: aisim-spin 1.2s linear infinite;
+}
