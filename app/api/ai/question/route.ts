@@ -21,6 +21,16 @@ function fallbackQuestions(type: InterviewType) {
     ];
   }
 
+  if (type === "Mixed") {
+    return [
+      "Tell me about yourself and what brings you to this role.",
+      "Pick one project from your resume. What was the most difficult technical decision you made, and why?",
+      "Describe a time you disagreed with a teammate. How did you handle it?",
+      "Explain closures in JavaScript and a common use case.",
+      "How would you design a URL shortener at a high level?",
+    ];
+  }
+
   return [
     "Explain closures in JavaScript and a common use case.",
     "What is the difference between REST and GraphQL?",
@@ -28,6 +38,18 @@ function fallbackQuestions(type: InterviewType) {
     "What are React Server Components and what problems do they solve?",
     "Describe how you would design a URL shortener at a high level.",
   ];
+}
+
+function stageForQuestionNumber(questionNumber: number) {
+  // Designed for a ~10 minute interview at ~60s/question (~10 questions).
+  // Q1 is the introduction (handled client-side). This function is for subsequent questions.
+  if (questionNumber <= 1) return "Introduction";
+  if (questionNumber <= 3) return "Resume & Projects";
+  if (questionNumber <= 5) return "Technical Skills Evaluation";
+  if (questionNumber <= 7) return "DSA / Problem Solving";
+  if (questionNumber <= 8) return "Scenario-Based Questions";
+  if (questionNumber <= 9) return "Cross-questioning";
+  return "Wrap-up";
 }
 
 export async function POST(request: Request) {
@@ -48,6 +70,7 @@ export async function POST(request: Request) {
         focusAreas?: string;
         resumeText?: string;
         resumeProfile?: unknown;
+        previousQuestions?: unknown;
       }
     | null;
 
@@ -60,11 +83,23 @@ export async function POST(request: Request) {
   const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
   const resumeText = clampString(body?.resumeText?.trim() || "", 12000);
 
+  const previousQuestions = Array.isArray(body?.previousQuestions)
+    ? (body?.previousQuestions as unknown[])
+        .map((q) => clampString(String(q || "").trim(), 240))
+        .filter(Boolean)
+        .slice(0, 25)
+    : [];
+
   const resumeProfileString = body?.resumeProfile
     ? clampString(JSON.stringify(body.resumeProfile), 12000)
     : "";
 
   const resumeContext = (resumeProfileString || resumeText).trim();
+
+  // Client asks the introduction question; this endpoint generates subsequent questions.
+  // previousQuestions contains already-asked questions.
+  const questionNumber = Math.min(25, Math.max(1, previousQuestions.length + 1));
+  const stage = stageForQuestionNumber(questionNumber);
 
   const system = resumeContext ? resumeQuestionSystemPrompt() : questionSystemPrompt();
   const user = resumeContext
@@ -76,8 +111,11 @@ export async function POST(request: Request) {
         type,
         company,
         focusAreas,
+        previousQuestions,
+        stage,
+        questionNumber,
       })
-    : questionUserPrompt({ type, difficulty, role, experience, company, focusAreas });
+    : questionUserPrompt({ type, difficulty, role, experience, company, focusAreas, previousQuestions, stage, questionNumber });
 
   const aiQuestion = await llmText({
     system,

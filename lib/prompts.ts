@@ -1,4 +1,4 @@
-export type InterviewType = "Technical" | "HR";
+export type InterviewType = "Technical" | "HR" | "Mixed";
 export type Difficulty = "Easy" | "Medium" | "Hard" | "Adaptive";
 
 export function interviewSimulatorSystemPrompt() {
@@ -13,6 +13,10 @@ export function interviewSimulatorSystemPrompt() {
     "  interview_id, user_id, role, experience_level, questions, answers, timestamps, scores, and final_feedback.",
     "* Each question and answer must be saved immediately after the user submits the answer.",
     "* The interview can be resume-based or general depending on the provided resume profile.",
+    "* The interview must feel like a professional human-to-human conversation.",
+    "* Ask ONE question at a time and wait for the candidate response.",
+    "* Acknowledge the candidate response briefly before the next question (e.g., 'Thanks, that helps.').",
+    "* The session should typically include ~10–15 questions and last ~15–30 minutes.",
     "",
     "TEXT MODE INTERVIEW",
     "",
@@ -35,9 +39,12 @@ export function interviewSimulatorSystemPrompt() {
     "",
     "QUESTION TYPES",
     "",
-    "* Mix both technical and HR questions.",
+    "* In Mixed mode, mix both technical and HR questions.",
+    "* In Technical mode, ask technical questions (projects, architecture, debugging, system design).",
+    "* In HR mode, ask behavioral questions (communication, ownership, conflict, leadership).",
     "* Use the user's role, experience level, and focus areas to generate questions.",
     "* If a resume is provided, prioritize questions based on the user's projects and skills.",
+    "* Always start the session with an introduction prompt asking the candidate to introduce themselves.",
     "",
     "ANSWER TIMING",
     "",
@@ -68,13 +75,16 @@ export function interviewSimulatorSystemPrompt() {
     "At the end of the interview generate structured JSON feedback:",
     "",
     "{",
-    '"overall_score": number,',
-    '"technical_score": number,',
-    '"communication_score": number,',
-    '"strengths": [],',
-    '"weaknesses": [],',
-    '"improvement_suggestions": [],',
-    '"recommended_focus_areas": []',
+    '"candidate_summary": string,',
+    '"technical_knowledge_score": number,',
+    '"communication_skill_score": number,',
+    '"confidence_score": number,',
+    '"problem_solving_score": number,',
+    '"english_fluency_score": number,',
+    '"project_knowledge_score": number,',
+    '"strengths": string[],',
+    '"weaknesses": string[],',
+    '"final_recommendation": "Hire" | "No Hire"',
     "}",
     "",
     "The goal is to simulate a realistic interview experience similar to a real company interview while keeping the session structured, fair, and helpful for the user.",
@@ -85,12 +95,21 @@ export function questionSystemPrompt() {
   return [
     interviewSimulatorSystemPrompt(),
     "",
-    "You are a professional interviewer.",
-    "Ask one clear and realistic interview question.",
-    "Do not explain the answer.",
-    "Do not give hints.",
-    "Only ask the question.",
-    "Keep it concise and professional.",
+    "You are a highly professional interviewer conducting a real-time technical interview.",
+    "Your goal is to simulate a real human interviewer.",
+    "",
+    "CORE RULES (STRICT)",
+    "- Never repeat a question or ask the same intent again.",
+    "- Ask ONLY ONE introduction question at the beginning of the interview (never again).",
+    "- Ask ONE question at a time and wait for the candidate response.",
+    "- Do NOT behave like a questionnaire — behave like a human interviewer.",
+    "- Ask follow-up questions based on the candidate’s answers when appropriate (but still only one question at a time).",
+    "",
+    "STYLE",
+    "- Formal but friendly.",
+    "- Concise but meaningful.",
+    "- No bullet points or lists in the output.",
+    "- Output must be ONLY the question text.",
   ].join("\n");
 }
 
@@ -101,20 +120,32 @@ export function questionUserPrompt(params: {
   experience: string;
   company?: string;
   focusAreas?: string;
+  previousQuestions?: string[];
+  stage?: string;
+  questionNumber?: number;
 }) {
   return [
     "Generate one interview question.",
+    typeof params.questionNumber === "number" ? `Question Number (1-based): ${params.questionNumber}` : "",
+    params.stage?.trim() ? `Current Interview Stage (strict): ${params.stage.trim()}` : "",
     `Interview Type: ${params.type}`,
     `Difficulty: ${params.difficulty}`,
     `Job Role: ${params.role}`,
     `Experience Level: ${params.experience}`,
     params.company?.trim() ? `Target Company: ${params.company.trim()}` : "",
     params.focusAreas?.trim() ? `Focus Areas: ${params.focusAreas.trim()}` : "",
-    "If technical:",
-    "- Focus on concepts, system design, or DSA.",
-    "If HR:",
-    "- Ask behavioral or situational questions.",
-    "Return only the question text.",
+    params.previousQuestions?.length
+      ? `Already asked (avoid repeats): ${params.previousQuestions
+          .slice(-8)
+          .map((q) => q.replace(/\s+/g, " ").trim())
+          .join(" | ")}`
+      : "",
+    "Requirements:",
+    "- Ask ONLY ONE question.",
+    "- Do NOT repeat or rephrase an already-asked question.",
+    "- Do NOT ask 'Tell me about yourself' unless the stage is Introduction.",
+    "- Keep it natural and conversational (no robotic templates).",
+    "Return only the question text (no lists, no prefixes).",
   ]
     .filter(Boolean)
     .join("\n");
@@ -125,11 +156,17 @@ export function resumeQuestionSystemPrompt() {
     interviewSimulatorSystemPrompt(),
     "",
     "You are a senior interviewer conducting a resume-based interview.",
-    "Ask questions based strictly on the candidate's resume profile (skills, projects, impact, soft skills).",
-    "Be realistic and role-specific.",
-    "Do not explain answers.",
-    "Ask ONE question only.",
-    "Prefer questions that probe depth: tradeoffs, decisions, debugging, impact, and ownership.",
+    "Simulate a real human interviewer.",
+    "",
+    "CORE RULES (STRICT)",
+    "- Never repeat a question or ask the same intent again.",
+    "- Ask ONLY ONE introduction question at the beginning of the interview (never again).",
+    "- Ask ONE question at a time.",
+    "- Be realistic, role-specific, and grounded in the resume.",
+    "",
+    "OUTPUT",
+    "- Output ONLY the question text.",
+    "- No bullet points or lists.",
   ].join("\n");
 }
 
@@ -141,20 +178,31 @@ export function resumeQuestionUserPrompt(params: {
   type: InterviewType;
   company?: string;
   focusAreas?: string;
+  previousQuestions?: string[];
+  stage?: string;
+  questionNumber?: number;
 }) {
   return [
     `Candidate Resume Summary: ${params.parsedResume}`,
+    typeof params.questionNumber === "number" ? `Question Number (1-based): ${params.questionNumber}` : "",
+    params.stage?.trim() ? `Current Interview Stage (strict): ${params.stage.trim()}` : "",
     `Target Role: ${params.role}`,
     `Experience Level: ${params.experience}`,
     `Interview Type: ${params.type}`,
     `Difficulty: ${params.difficulty}`,
     params.company?.trim() ? `Target Company: ${params.company.trim()}` : "",
     params.focusAreas?.trim() ? `Focus Areas: ${params.focusAreas.trim()}` : "",
+    params.previousQuestions?.length
+      ? `Already asked (avoid repeats): ${params.previousQuestions
+          .slice(-8)
+          .map((q) => q.replace(/\s+/g, " ").trim())
+          .join(" | ")}`
+      : "",
     "Generate one challenging and relevant question based on the resume.",
-    "If resume mentions specific technologies/projects, pick ONE and ask a targeted follow-up.",
-    "For HR: focus on soft skills, collaboration, conflict, leadership, decision-making, and impact.",
-    "For Technical: focus on implementation details, tradeoffs, debugging, performance, reliability, and security.",
-    "Return only the question text.",
+    "Pick ONE topic (one project OR one skill OR one decision) and go deep.",
+    "Do NOT repeat any already-asked question or intent.",
+    "Do NOT ask multiple questions.",
+    "Return only the question text (no lists, no prefixes).",
   ]
     .filter(Boolean)
     .join("\n");
@@ -184,6 +232,9 @@ export function evaluationSystemPrompt() {
     "FOLLOW-UP QUESTION:",
     "- Must directly relate to the question AND the candidate answer.",
     "- If the answer was weak/incorrect, ask a corrective/foundational follow-up.",
+    "ADDITIONAL DIMENSIONS:",
+    "- english_fluency_score should reflect fluency/grammar/word choice (not accent).",
+    "- project_knowledge_score should reflect ownership and concrete recall of their own work (if applicable).",
     "Respond ONLY in valid JSON format.",
     "Do not add extra text outside JSON.",
   ].join("\n");
@@ -218,6 +269,8 @@ export function evaluationUserPrompt(params: {
     "2. Clarity of Explanation (0-10)",
     "3. Confidence & Communication (0-10)",
     "4. Depth of Knowledge (0-10)",
+    "5. English Fluency (0-10) (fluency/grammar/word choice; ignore accent)",
+    "6. Project Knowledge (0-10) (ownership + concrete details; 0-3 if not applicable)",
     params.resumeContext?.trim()
       ? "Also consider: Does the answer credibly align with the candidate's stated projects/skills and appropriate scope for their experience level?"
       : "",
@@ -233,6 +286,8 @@ export function evaluationUserPrompt(params: {
     '  "clarity_score": number,',
     '  "confidence_score": number,',
     '  "depth_score": number,',
+    '  "english_fluency_score": number,',
+    '  "project_knowledge_score": number,',
     '  "overall_score": number,',
     '  "strengths": "text",',
     '  "weaknesses": "text",',

@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import type { Difficulty, InterviewType } from "@/lib/prompts";
 import { adjustDifficulty } from "@/lib/prompts";
@@ -8,6 +10,7 @@ import type { Evaluation } from "@/app/api/ai/evaluate/route";
 import type { FinalReport } from "@/app/api/ai/report/route";
 import type { ResumeProfile } from "@/app/api/resume/profile/route";
 import { createFaceDetector, type FaceDetectorApi } from "./faceDetector";
+import ResumeLoader from "./components/ResumeLoader";
 
 type Turn = {
   question: string;
@@ -47,6 +50,21 @@ const DETAILS_KEY = "aisim_interview_details";
 const RESUME_KEY = "aisim_resume_text";
 const INTERVIEW_ID_KEY = "aisim_interview_id";
 const ANON_ID_KEY = "aisim_anon_id";
+
+const INTRO_QUESTION = "Tell me about yourself.";
+
+const TOTAL_INTERVIEW_SECONDS = 10 * 60;
+const QUESTION_SECONDS = 60;
+const VIDEO_TARGET_QUESTIONS = Math.max(1, Math.floor(TOTAL_INTERVIEW_SECONDS / QUESTION_SECONDS));
+
+const SILENCE_WARNING_MS = 8000;
+
+function formatMmSs(totalSeconds: number) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
 
 function getOrCreateAnonId() {
   try {
@@ -106,6 +124,7 @@ function countFillers(text: string) {
 }
 
 export default function InterviewClient() {
+  const router = useRouter();
   const [type, setType] = useState<InterviewType>("HR");
   const [role, setRole] = useState("Software Engineer");
   const [experience, setExperience] = useState("0-2 years");
@@ -117,25 +136,57 @@ export default function InterviewClient() {
   const [resumeText, setResumeText] = useState<string>("");
   const [useResume, setUseResume] = useState<boolean>(true);
   const [resumeProfile, setResumeProfile] = useState<ResumeProfile | null>(null);
+  const [resumeProfileStatus, setResumeProfileStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+
+  const [cameraPermission, setCameraPermission] = useState<"unknown" | "granted" | "denied">("unknown");
+  const [micPermission, setMicPermission] = useState<"unknown" | "granted" | "denied">("unknown");
+  const [faceDetectionStatus, setFaceDetectionStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [startRequested, setStartRequested] = useState(false);
+
+  const [scheduleGate, setScheduleGate] = useState<"allowed" | "unknown" | "waiting">("allowed");
+  const [scheduledStartAt, setScheduledStartAt] = useState<number | null>(null);
+  const scheduledStartAtRef = useRef<number | null>(null);
+  const [scheduledSecondsLeft, setScheduledSecondsLeft] = useState<number>(0);
 
   const [question, setQuestion] = useState<string>("");
   const [answer, setAnswer] = useState<string>("");
+  const questionRef = useRef<string>("");
+  const answerRef = useRef<string>("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const turnsRef = useRef<Turn[]>([]);
   const [interviewId, setInterviewId] = useState<string>("");
   const [status, setStatus] = useState<"idle" | "loading" | "evaluating" | "done">(
     "idle",
   );
+  const statusRef = useRef<typeof status>("idle");
   const [message, setMessage] = useState<string>("");
   const [finalReport, setFinalReport] = useState<FinalReport | null>(null);
   const [averageOverall, setAverageOverall] = useState<number | null>(null);
 
+  const [interviewStarted, setInterviewStarted] = useState(false);
+  const interviewStartedRef = useRef(false);
+  const interviewEndsAtRef = useRef<number | null>(null);
+  const questionEndsAtRef = useRef<number | null>(null);
+  const [totalSecondsLeft, setTotalSecondsLeft] = useState<number>(TOTAL_INTERVIEW_SECONDS);
+  const [questionSecondsLeft, setQuestionSecondsLeft] = useState<number>(QUESTION_SECONDS);
+
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const voiceEnabledRef = useRef(false);
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionType | null>(null);
   const preferredVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const speakingRef = useRef(false);
   const speakTokenRef = useRef(0);
+
+  const lastDictationAtRef = useRef<number>(0);
+  const questionShownAtRef = useRef<number>(0);
+  const nudgedForQuestionRef = useRef<string>("");
+  const nudgeInFlightRef = useRef(false);
+  const dictationFinalRef = useRef<string>("");
+  const dictationInterimRef = useRef<string>("");
+  const silenceWarningIssuedRef = useRef(false);
+  const spokeAfterSilenceWarningRef = useRef(false);
+  const autoSubmitInFlightRef = useRef(false);
 
   const [videoEnabled, setVideoEnabled] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -148,10 +199,13 @@ export default function InterviewClient() {
   const faceDetectorRef = useRef<FaceDetectorApi | null>(null);
   const noFaceSinceRef = useRef<number | null>(null);
   const noFaceIssuedRef = useRef(false);
+  const offCenterStreakRef = useRef(0);
+  const lastLookAwayViolationAtRef = useRef<number>(0);
   const autoSubmitTriggeredRef = useRef(false);
   const lastSpokenQuestionRef = useRef<string>("");
   const warnedNoFullscreenRef = useRef(false);
-  const pauseWarnedQuestionRef = useRef<string>("");
+
+  const followUpsAskedRef = useRef(0);
 
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -162,6 +216,41 @@ export default function InterviewClient() {
   useEffect(() => {
     turnsRef.current = turns;
   }, [turns]);
+
+  useEffect(() => {
+    questionRef.current = question;
+  }, [question]);
+
+  useEffect(() => {
+    answerRef.current = answer;
+  }, [answer]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    voiceEnabledRef.current = voiceEnabled;
+  }, [voiceEnabled]);
+
+  useEffect(() => {
+    interviewStartedRef.current = interviewStarted;
+  }, [interviewStarted]);
+
+  useEffect(() => {
+    scheduledStartAtRef.current = scheduledStartAt;
+  }, [scheduledStartAt]);
+
+  useEffect(() => {
+    lastDictationAtRef.current = 0;
+    silenceWarningIssuedRef.current = false;
+    spokeAfterSilenceWarningRef.current = false;
+    questionShownAtRef.current = Date.now();
+    nudgedForQuestionRef.current = "";
+    nudgeInFlightRef.current = false;
+    dictationFinalRef.current = "";
+    dictationInterimRef.current = "";
+  }, [question]);
 
   const recordViolation = useCallback((reason: string, opts?: { count?: boolean }) => {
     // Once the interview is complete/terminated, don't keep adding warnings.
@@ -195,6 +284,9 @@ export default function InterviewClient() {
       setAverageOverall(0);
       setMessage("Interview ended due to repeated proctoring violations.");
 
+      // Auto-finish: redirect to completion screen.
+      router.push("/interview/completed");
+
       try {
         const id = await ensureInterviewSession();
         if (id) {
@@ -226,7 +318,7 @@ export default function InterviewClient() {
     })();
     // finishInterview is intentionally not in deps; it is stable enough for this one-shot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proctorEnabled, violations, lastViolation]);
+  }, [proctorEnabled, violations, lastViolation, router]);
 
   function pickPreferredVoice(voices: SpeechSynthesisVoice[]) {
     const candidates = voices
@@ -301,7 +393,7 @@ export default function InterviewClient() {
 
       synth.cancel();
       const utter = new SpeechSynthesisUtterance(trimmed);
-      utter.lang = "en-US";
+      utter.lang = "en-IN";
       utter.voice = preferredVoiceRef.current ?? null;
 
       // Slightly slower, more human cadence.
@@ -391,15 +483,91 @@ export default function InterviewClient() {
 
   useEffect(() => {
     const existing = window.localStorage.getItem(INTERVIEW_ID_KEY);
-    if (existing && existing.trim()) setInterviewId(existing.trim());
+    if (existing && existing.trim()) {
+      setInterviewId(existing.trim());
+      setScheduleGate("unknown");
+    }
   }, []);
+
+  useEffect(() => {
+    if (!interviewId) {
+      setScheduleGate("allowed");
+      setScheduledStartAt(null);
+      return;
+    }
+
+    let cancelled = false;
+    async function run() {
+      try {
+        const res = await fetch(`/api/interviews/${encodeURIComponent(interviewId)}`, {
+          method: "GET",
+          credentials: "include",
+        });
+
+        const payload = (await res.json().catch(() => null)) as
+          | { ok: true; interview: { status: string; scheduledFor: string | null } }
+          | { ok: false; error: string }
+          | null;
+
+        if (cancelled) return;
+        if (!res.ok || !payload || payload.ok === false) {
+          setScheduleGate("allowed");
+          setScheduledStartAt(null);
+          return;
+        }
+
+        const scheduledFor = payload.interview.scheduledFor;
+        const status = payload.interview.status;
+
+        if (status === "scheduled" && scheduledFor) {
+          const ts = Date.parse(scheduledFor);
+          if (Number.isFinite(ts) && ts > Date.now()) {
+            setScheduledStartAt(ts);
+            setScheduleGate("waiting");
+            return;
+          }
+        }
+
+        setScheduleGate("allowed");
+        setScheduledStartAt(null);
+      } catch {
+        if (!cancelled) {
+          setScheduleGate("allowed");
+          setScheduledStartAt(null);
+        }
+      }
+    }
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [interviewId]);
+
+  useEffect(() => {
+    if (scheduleGate !== "waiting" || !scheduledStartAt) {
+      setScheduledSecondsLeft(0);
+      return;
+    }
+
+    const id = window.setInterval(() => {
+      const left = Math.max(0, Math.ceil((scheduledStartAt - Date.now()) / 1000));
+      setScheduledSecondsLeft(left);
+      if (left <= 0) {
+        setScheduleGate("allowed");
+        setScheduledStartAt(null);
+      }
+    }, 250);
+
+    return () => window.clearInterval(id);
+  }, [scheduleGate, scheduledStartAt]);
 
   async function ensureInterviewSession(): Promise<string | null> {
     if (interviewId) return interviewId;
 
     try {
       const anonId = getOrCreateAnonId();
-      const res = await fetch("/api/interviews/session", {
+      const res = await fetch("/api/start-interview", {
         method: "POST",
         credentials: "include",
         headers: {
@@ -442,9 +610,10 @@ export default function InterviewClient() {
 
   useEffect(() => {
     if (interactionMode !== "video") return;
-    setVoiceEnabled(true);
-    setVideoEnabled(true);
-    setProctorEnabled(true);
+    // Pre-interview: do not start camera/mic/proctor automatically.
+    setVoiceEnabled(false);
+    setVideoEnabled(false);
+    setProctorEnabled(false);
   }, [interactionMode]);
 
   useEffect(() => {
@@ -458,9 +627,76 @@ export default function InterviewClient() {
   }, [interactionMode, stopListening]);
 
   useEffect(() => {
+    // Intentionally do not auto-enable camera when proctor is enabled.
+    // Camera starts only after user clicks Start Interview.
     if (!proctorEnabled) return;
-    if (!videoEnabled) setVideoEnabled(true);
   }, [proctorEnabled, videoEnabled]);
+
+  const requestCameraPermission = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      stream.getTracks().forEach((t) => t.stop());
+      setCameraPermission("granted");
+    } catch {
+      setCameraPermission("denied");
+      setMessage("Camera permission denied. Please allow camera access to continue.");
+    }
+  }, []);
+
+  const requestMicPermission = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      setMicPermission("granted");
+    } catch {
+      setMicPermission("denied");
+      setMessage("Microphone permission denied. Please allow microphone access to continue.");
+    }
+  }, []);
+
+  const ensureFaceDetectionReady = useCallback(async () => {
+    if (faceDetectorRef.current) {
+      setFaceDetectionStatus("ready");
+      return;
+    }
+    try {
+      setFaceDetectionStatus("loading");
+      const detector = await createFaceDetector();
+      faceDetectorRef.current = detector;
+      setFaceDetectionStatus(detector ? "ready" : "error");
+      if (!detector) setMessage("Face detection unavailable on this device/browser.");
+    } catch {
+      setFaceDetectionStatus("error");
+      setMessage("Could not initialize face detection.");
+    }
+  }, []);
+
+  useEffect(() => {
+    // Best-effort: detect existing permission state when supported.
+    if (typeof navigator === "undefined") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const perms = (navigator as any).permissions;
+    if (!perms?.query) return;
+
+    let cancelled = false;
+    async function run() {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const cam = await perms.query({ name: "camera" as any });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mic = await perms.query({ name: "microphone" as any });
+        if (cancelled) return;
+        if (cam?.state === "granted") setCameraPermission("granted");
+        if (mic?.state === "granted") setMicPermission("granted");
+      } catch {
+        // ignore
+      }
+    }
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -468,15 +704,18 @@ export default function InterviewClient() {
     async function run() {
       if (!useResume) {
         setResumeProfile(null);
+        setResumeProfileStatus("ready");
         return;
       }
       const text = resumeText.trim();
       if (!text) {
         setResumeProfile(null);
+        setResumeProfileStatus("ready");
         return;
       }
 
       try {
+        setResumeProfileStatus("loading");
         const res = await fetch("/api/resume/profile", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -492,12 +731,17 @@ export default function InterviewClient() {
 
         if (!res.ok || !payload || payload.ok === false) {
           setResumeProfile(null);
+          setResumeProfileStatus("error");
           return;
         }
 
         setResumeProfile(payload.profile);
+        setResumeProfileStatus("ready");
       } catch {
-        if (!cancelled) setResumeProfile(null);
+        if (!cancelled) {
+          setResumeProfile(null);
+          setResumeProfileStatus("error");
+        }
       }
     }
 
@@ -506,6 +750,35 @@ export default function InterviewClient() {
       cancelled = true;
     };
   }, [useResume, resumeText, role, experience]);
+
+  const canStartNow =
+    scheduleGate !== "unknown" &&
+    scheduleGate !== "waiting" &&
+    (!scheduledStartAtRef.current || Date.now() >= scheduledStartAtRef.current);
+
+  const needsResume = Boolean(useResume && resumeText.trim());
+  const resumeReady = !needsResume || resumeProfileStatus === "ready";
+  const videoSetupReady =
+    interactionMode !== "video" ||
+    (cameraPermission === "granted" && micPermission === "granted" && faceDetectionStatus === "ready");
+
+  const readyToStart = status === "idle" && !question.trim() && resumeReady && videoSetupReady;
+
+  function startInterviewTimers() {
+    const now = Date.now();
+    interviewEndsAtRef.current = now + TOTAL_INTERVIEW_SECONDS * 1000;
+    setTotalSecondsLeft(TOTAL_INTERVIEW_SECONDS);
+    setInterviewStarted(true);
+  }
+
+  function armQuestionTimer() {
+    if (!interviewEndsAtRef.current) return;
+    const now = Date.now();
+    const maxUntilEnd = Math.max(1, Math.floor((interviewEndsAtRef.current - now) / 1000));
+    const seconds = Math.max(1, Math.min(QUESTION_SECONDS, maxUntilEnd));
+    questionEndsAtRef.current = now + seconds * 1000;
+    setQuestionSecondsLeft(seconds);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -608,6 +881,11 @@ export default function InterviewClient() {
     let cancelled = false;
 
     async function init() {
+      if (faceDetectorRef.current) {
+        setLastViolation("");
+        return;
+      }
+
       setLastViolation("Loading face detection…");
       const detector = await createFaceDetector();
       if (cancelled) {
@@ -648,6 +926,7 @@ export default function InterviewClient() {
             lastFaceViolationAtRef.current = now;
             recordViolation("No face detected (5s+)");
           }
+          offCenterStreakRef.current = 0;
           return;
         }
 
@@ -659,6 +938,7 @@ export default function InterviewClient() {
             lastFaceViolationAtRef.current = now;
             recordViolation("Multiple faces detected");
           }
+          offCenterStreakRef.current = 0;
           return;
         }
 
@@ -670,9 +950,15 @@ export default function InterviewClient() {
         const cx = (bb.x + bb.width / 2) / vw;
         const cy = (bb.y + bb.height / 2) / vh;
         const offCenter = Math.abs(cx - 0.5) > 0.28 || Math.abs(cy - 0.5) > 0.28;
-        if (offCenter && canRecord) {
+        if (offCenter) offCenterStreakRef.current += 1;
+        else offCenterStreakRef.current = 0;
+
+        const lookAwayCooldownOk = now - lastLookAwayViolationAtRef.current > 12000;
+        if (offCenterStreakRef.current >= 3 && lookAwayCooldownOk && canRecord) {
+          lastLookAwayViolationAtRef.current = now;
+          offCenterStreakRef.current = 0;
           lastFaceViolationAtRef.current = now;
-          recordViolation("Face off-center (possible looking away)");
+          recordViolation("Looking away repeatedly");
         }
       } catch {
         // Ignore detector errors; do not crash the interview UI.
@@ -727,7 +1013,9 @@ export default function InterviewClient() {
         }
 
         audioStreamRef.current = stream;
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const w = window as unknown as { webkitAudioContext?: typeof AudioContext };
+        const AudioCtor = window.AudioContext ?? w.webkitAudioContext;
+        const ctx = new AudioCtor();
         audioContextRef.current = ctx;
         const source = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
@@ -805,22 +1093,85 @@ export default function InterviewClient() {
     return true;
   }
 
+  const requestNudge = useCallback(async () => {
+    function isOkNudgePayload(value: unknown): value is { ok: true; nudge: string } {
+      if (!value || typeof value !== "object") return false;
+      if ((value as { ok?: unknown }).ok !== true) return false;
+      return typeof (value as { nudge?: unknown }).nudge === "string";
+    }
+
+    if (nudgeInFlightRef.current) return;
+    if (statusRef.current !== "idle") return;
+    if (speakingRef.current) return;
+
+    const q = questionRef.current.trim();
+    if (!q) return;
+    if (nudgedForQuestionRef.current === q) return;
+
+    const now = Date.now();
+    const lastSpeech = lastDictationAtRef.current || questionShownAtRef.current || now;
+    const silentFor = now - lastSpeech;
+    if (silentFor < 12_000) return;
+
+    nudgedForQuestionRef.current = q;
+    nudgeInFlightRef.current = true;
+
+    try {
+      const res = await fetch("/api/next-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "nudge",
+          type,
+          difficulty,
+          role,
+          experience,
+          company,
+          focusAreas,
+          resumeText: useResume ? resumeText : "",
+          resumeProfile: useResume ? resumeProfile : null,
+          previousQuestions: turnsRef.current.map((t) => t.question).filter(Boolean),
+          question: q,
+          partialAnswer: answerRef.current,
+        }),
+      });
+
+      const payload = (await res.json().catch(() => null)) as
+        | { ok: true; nudge: string }
+        | { ok: false; error: string }
+        | null;
+
+      const nudge = isOkNudgePayload(payload) ? payload.nudge.trim() : "";
+      if (!nudge) return;
+
+      setMessage(nudge);
+      if (voiceEnabledRef.current) {
+        await speak(nudge);
+      }
+    } catch {
+      // ignore
+    } finally {
+      nudgeInFlightRef.current = false;
+    }
+  }, [company, difficulty, experience, focusAreas, role, speak, type, useResume, resumeProfile, resumeText]);
+
   useEffect(() => {
     if (interactionMode !== "video") return;
     if (!proctorEnabled) return;
     if (!question.trim()) return;
     if (status !== "idle") return;
-    if (answer.trim()) return;
-    if (pauseWarnedQuestionRef.current === question) return;
+    if (statusRef.current !== "idle") return;
 
-    const id = window.setTimeout(() => {
-      if (pauseWarnedQuestionRef.current === question) return;
-      pauseWarnedQuestionRef.current = question;
-      recordViolation("Long pause detected. Please continue when ready.", { count: false });
-    }, 75000);
+    const id = window.setInterval(() => {
+      if (interactionMode !== "video") return;
+      if (statusRef.current !== "idle") return;
+      if (speakingRef.current) return;
+      if (!questionRef.current.trim()) return;
+      void requestNudge();
+    }, 900);
 
-    return () => window.clearTimeout(id);
-  }, [interactionMode, proctorEnabled, question, status, answer, recordViolation]);
+    return () => window.clearInterval(id);
+  }, [interactionMode, proctorEnabled, question, status, requestNudge]);
 
   useEffect(() => {
     if (!voiceEnabled) {
@@ -839,18 +1190,42 @@ export default function InterviewClient() {
       return;
     }
 
-    recognition.lang = "en-US";
+    recognition.lang = "en-IN";
     recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onresult = (event) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const e = event as any;
-      const last = e.results?.[e.results.length - 1];
-      const text = last?.[0]?.transcript;
-      if (typeof text === "string") {
-        setAnswer((prev) => (prev ? `${prev} ${text}` : text).trim());
+      const results = e.results;
+      if (!results || typeof results.length !== "number") return;
+
+      let finalAdd = "";
+      let interim = "";
+      const startIndex = typeof e.resultIndex === "number" ? e.resultIndex : Math.max(0, results.length - 1);
+
+      for (let i = startIndex; i < results.length; i += 1) {
+        const r = results[i];
+        const transcript = r?.[0]?.transcript;
+        if (typeof transcript !== "string") continue;
+        if (r.isFinal) finalAdd += ` ${transcript}`;
+        else interim += transcript;
       }
+
+      if (!dictationFinalRef.current.trim() && answerRef.current.trim()) {
+        dictationFinalRef.current = answerRef.current.trim();
+      }
+
+      if (finalAdd.trim()) {
+        dictationFinalRef.current = `${dictationFinalRef.current} ${finalAdd}`.replace(/\s+/g, " ").trim();
+      }
+      dictationInterimRef.current = interim.replace(/\s+/g, " ").trim();
+
+      const combined = [dictationFinalRef.current, dictationInterimRef.current].filter(Boolean).join(" ").trim();
+      if (combined) setAnswer(combined);
+
+      lastDictationAtRef.current = Date.now();
+      if (silenceWarningIssuedRef.current) spokeAfterSilenceWarningRef.current = true;
     };
 
     recognition.onerror = () => {
@@ -860,6 +1235,19 @@ export default function InterviewClient() {
 
     recognition.onend = () => {
       setListening(false);
+      // Keep the experience "live": auto-restart recognition when appropriate.
+      if (!voiceEnabledRef.current) return;
+      if (statusRef.current !== "idle") return;
+      if (speakingRef.current) return;
+      if (!questionRef.current.trim()) return;
+      window.setTimeout(() => {
+        try {
+          recognitionRef.current?.start();
+          setListening(true);
+        } catch {
+          // ignore
+        }
+      }, 150);
     };
   }, [voiceEnabled]);
 
@@ -876,6 +1264,11 @@ export default function InterviewClient() {
       await speak(question);
       if (cancelled) return;
 
+      // Start the per-question timer after the interviewer finishes speaking.
+      if (interviewStartedRef.current && statusRef.current === "idle") {
+        armQuestionTimer();
+      }
+
       // Best-effort: start listening after the interviewer finishes speaking.
       // (Browser may require user gesture; user can always press Start listening.)
       startListening();
@@ -891,6 +1284,45 @@ export default function InterviewClient() {
     };
   }, [interactionMode, question, speak, startListening]);
 
+  useEffect(() => {
+    if (interactionMode !== "video") return;
+    if (!voiceEnabled) return;
+    if (!question.trim()) return;
+    if (status !== "idle") return;
+
+    const id = window.setInterval(() => {
+      if (interactionMode !== "video") return;
+      if (!voiceEnabledRef.current) return;
+      if (statusRef.current !== "idle") return;
+      if (speakingRef.current) return;
+      if (!questionRef.current.trim()) return;
+      if (!answerRef.current.trim()) return;
+
+      const last = lastDictationAtRef.current;
+      if (!last) return;
+
+      const silentFor = Date.now() - last;
+      if (silentFor < SILENCE_WARNING_MS) return;
+
+      if (!silenceWarningIssuedRef.current) {
+        silenceWarningIssuedRef.current = true;
+        spokeAfterSilenceWarningRef.current = false;
+        setMessage("Warning: silence detected. Next silence will auto-submit your answer.");
+        return;
+      }
+
+      if (!spokeAfterSilenceWarningRef.current) return;
+
+      void submitAnswer({
+        question: questionRef.current,
+        answer: answerRef.current,
+        reason: "silence",
+      });
+    }, 250);
+
+    return () => window.clearInterval(id);
+  }, [interactionMode, question, status, voiceEnabled]);
+
   async function getNextQuestion() {
     if (!proctorGateOk()) return;
 
@@ -900,10 +1332,11 @@ export default function InterviewClient() {
     // Create DB session as early as possible (non-blocking).
     void ensureInterviewSession();
 
-    const response = await fetch("/api/ai/question", {
+    const response = await fetch("/api/next-question", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        mode: "question",
         type,
         difficulty,
         role,
@@ -912,6 +1345,7 @@ export default function InterviewClient() {
         focusAreas,
         resumeText: useResume ? resumeText : "",
         resumeProfile: useResume ? resumeProfile : null,
+        previousQuestions: turnsRef.current.map((t) => t.question).filter(Boolean),
       }),
     });
 
@@ -931,43 +1365,119 @@ export default function InterviewClient() {
     setMessage("");
   }
 
-  async function submitAnswer() {
+  async function startInterview() {
+    if (!proctorGateOk()) return;
+    if (status === "loading" || status === "evaluating" || status === "done") return;
+    if (question.trim()) return;
+
+    if (scheduledStartAtRef.current && Date.now() < scheduledStartAtRef.current) {
+      setScheduleGate("waiting");
+      const left = Math.max(0, Math.ceil((scheduledStartAtRef.current - Date.now()) / 1000));
+      setScheduledSecondsLeft(left);
+      setMessage(`Scheduled interview starts in ${formatMmSs(left)}.`);
+      return;
+    }
+
+    followUpsAskedRef.current = 0;
+    lastSpokenQuestionRef.current = "";
+
+    startInterviewTimers();
+
+    // Create DB session as early as possible (non-blocking).
+    void ensureInterviewSession();
+
+    setAnswer("");
+    setStatus("idle");
+    setMessage(interactionMode === "video" ? "Starting interview…" : "Starting…");
+    setQuestion(INTRO_QUESTION);
+  }
+
+  const onStartInterview = useCallback(async () => {
+    if (!resumeReady) return;
+
+    setStartRequested(true);
+
+    if (!canStartNow) {
+      setMessage(
+        scheduleGate === "waiting" && scheduledSecondsLeft > 0
+          ? `Scheduled interview starts in ${formatMmSs(scheduledSecondsLeft)}.`
+          : "Please wait…",
+      );
+      return;
+    }
+
+    if (interactionMode === "video") {
+      setVideoEnabled(true);
+      setVoiceEnabled(true);
+      setProctorEnabled(true);
+    }
+
+    await startInterview();
+  }, [canStartNow, interactionMode, resumeReady, scheduleGate, scheduledSecondsLeft]);
+
+  function noAnswerEvaluation(): Evaluation {
+    return {
+      technical_score: 0,
+      clarity_score: 0,
+      confidence_score: 0,
+      depth_score: 0,
+      english_fluency_score: 0,
+      project_knowledge_score: 0,
+      overall_score: 0,
+      strengths: "No strengths to assess because no meaningful answer was provided.",
+      weaknesses: "No answer (or an incomplete response) was provided within the allotted time.",
+      improvement: "Answer directly with a clear structure and one concrete example.",
+      ideal_answer: "A strong answer addresses the question directly, includes an example, and explains trade-offs.",
+      follow_up_question: "Please answer the question directly and include one concrete example.",
+    };
+  }
+
+  async function submitAnswer(force?: { question: string; answer: string; reason?: "timeout" | "silence" | "manual" }) {
     if (!proctorGateOk()) return;
 
-    const trimmed = answer.trim();
-    if (!question || !trimmed) {
-      setMessage("Please answer the question first.");
-      return;
-    }
+    // Prevent repeated auto-submits for the same expired timer.
+    questionEndsAtRef.current = null;
+
+    const q = (force?.question ?? question).trim();
+    const trimmed = (force?.answer ?? answer).trim();
+    if (!q) return;
+
+    if (autoSubmitInFlightRef.current || statusRef.current !== "idle") return;
+    autoSubmitInFlightRef.current = true;
 
     setStatus("evaluating");
-    setMessage("Evaluating your answer…");
+    setMessage(trimmed ? "Evaluating your answer…" : "Time's up. Moving on…");
 
-    const evalRes = await fetch("/api/ai/evaluate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question,
-        answer: trimmed,
-        type,
-        role,
-        experience,
-        company,
-        focusAreas,
-        resumeText: useResume ? resumeText : "",
-        resumeProfile: useResume ? resumeProfile : null,
-      }),
-    });
+    try {
+      const evaluation: Evaluation = trimmed
+        ? await (async () => {
+            const evalRes = await fetch("/api/ai/evaluate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                question: q,
+                answer: trimmed,
+                type,
+                role,
+                experience,
+                company,
+                focusAreas,
+                resumeText: useResume ? resumeText : "",
+                resumeProfile: useResume ? resumeProfile : null,
+              }),
+            });
 
-    const evalPayload = (await evalRes.json()) as
-      | { ok: true; evaluation: Evaluation }
-      | { ok: false; error: string };
+            const evalPayload = (await evalRes.json()) as
+              | { ok: true; evaluation: Evaluation }
+              | { ok: false; error: string };
 
-    if (!evalRes.ok || evalPayload.ok === false) {
-      setStatus("idle");
-      setMessage("Could not evaluate answer. Please try again.");
-      return;
-    }
+            if (!evalRes.ok || evalPayload.ok === false) {
+              throw new Error("Could not evaluate answer.");
+            }
+
+            return evalPayload.evaluation;
+          })()
+        : noAnswerEvaluation();
 
     let star:
       | {
@@ -978,74 +1488,154 @@ export default function InterviewClient() {
         }
       | undefined;
 
-    if (type === "HR") {
-      const starRes = await fetch("/api/ai/star", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, answer: trimmed }),
-      });
-
-      const starPayload = (await starRes.json()) as
-        | { ok: true; star: Turn["star"] }
-        | { ok: false; error: string };
-
-      if (starRes.ok && starPayload.ok !== false) {
-        star = starPayload.star;
-      }
-    }
-
-    const evaluation = evalPayload.evaluation;
-    const newTurn = { question, answer: trimmed, evaluation, star };
-
-    // Store to DB immediately after the user submits the answer.
-    try {
-      const id = await ensureInterviewSession();
-      if (id) {
-        const anonId = getOrCreateAnonId();
-        await fetch(`/api/interviews/${id}/turn`, {
+      if (trimmed && type === "HR") {
+        const starRes = await fetch("/api/ai/star", {
           method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-            ...(anonId ? { "x-aisim-anon-id": anonId } : {}),
-          },
-          body: JSON.stringify({
-            question,
-            answer: trimmed,
-            evaluation,
-            star: star ?? null,
-          }),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: q, answer: trimmed }),
         });
+
+        const starPayload = (await starRes.json()) as
+          | { ok: true; star: Turn["star"] }
+          | { ok: false; error: string };
+
+        if (starRes.ok && starPayload.ok !== false) {
+          star = starPayload.star;
+        }
       }
-    } catch {
-      // ignore DB errors; local storage still keeps the transcript
-    }
 
-    setTurns((prev) => [...prev, newTurn]);
-    if (difficultySetting === "Adaptive") {
-      setDifficulty((prev) => adjustDifficulty(prev, evaluation.overall_score));
-    }
+      const newTurn = { question: q, answer: trimmed, evaluation, star };
 
-    const nextCount = turns.length + 1;
-    if (nextCount >= 5) {
-      const allTurns = [...turns, newTurn];
-      void finishInterview(allTurns);
-      return;
-    }
+      // Store to DB immediately after the user submits the answer.
+      try {
+        const id = await ensureInterviewSession();
+        if (id) {
+          const anonId = getOrCreateAnonId();
+          await fetch(`/api/interviews/${id}/turn`, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type": "application/json",
+              ...(anonId ? { "x-aisim-anon-id": anonId } : {}),
+            },
+            body: JSON.stringify({
+              question: q,
+              answer: trimmed,
+              evaluation,
+              star: star ?? null,
+            }),
+          });
+        }
+      } catch {
+        // ignore DB errors; local storage still keeps the transcript
+      }
 
-    setQuestion("");
-    setAnswer("");
-    setStatus("idle");
+      setTurns((prev) => [...prev, newTurn]);
+      if (difficultySetting === "Adaptive") {
+        setDifficulty((prev) => adjustDifficulty(prev, evaluation.overall_score));
+      }
 
-    if (interactionMode === "typing") {
-      setMessage("Answer evaluated. Generating the next question…");
+      const nextCount = turns.length + 1;
+      const maxQuestions = VIDEO_TARGET_QUESTIONS;
+      if (nextCount >= maxQuestions) {
+        const allTurns = [...turns, newTurn];
+        void finishInterview(allTurns, { endedReason: "max_questions" });
+        return;
+      }
+
+      if (interviewEndsAtRef.current && Date.now() >= interviewEndsAtRef.current) {
+        const allTurns = [...turns, newTurn];
+        void finishInterview(allTurns, { endedReason: "time_limit" });
+        return;
+      }
+
+      const followUp = (evaluation.follow_up_question || "").trim();
+      const shouldFollowUp =
+        followUp &&
+        followUpsAskedRef.current < 3 &&
+        (evaluation.overall_score <= 4 || evaluation.depth_score <= 4 || evaluation.technical_score <= 4);
+
+      setQuestion("");
+      setAnswer("");
+      setStatus("idle");
+
+      if (interactionMode === "typing") {
+        setMessage(shouldFollowUp ? "Follow-up question…" : "Answer evaluated. Generating the next question…");
+        if (shouldFollowUp) {
+          followUpsAskedRef.current += 1;
+          setQuestion(followUp);
+          return;
+        }
+
+        await getNextQuestion();
+        return;
+      }
+
+      setMessage(shouldFollowUp ? "Thanks. One follow-up…" : "Thanks. Next question…");
+      await speak("Thanks — that’s helpful.");
+
+      if (shouldFollowUp) {
+        followUpsAskedRef.current += 1;
+        setQuestion(followUp);
+        return;
+      }
+
       await getNextQuestion();
-      return;
+    } finally {
+      autoSubmitInFlightRef.current = false;
     }
-
-    setMessage("Thanks. Next question…");
-    await getNextQuestion();
   }
+
+  useEffect(() => {
+    // Arm/re-arm the per-question timer whenever a new question is shown.
+    // For video mode, we arm after the TTS finishes (see the speak() effect above).
+    if (interactionMode === "video") return;
+    if (!interviewStartedRef.current) return;
+    if (!question.trim()) return;
+    if (status !== "idle") return;
+    armQuestionTimer();
+    // armQuestionTimer intentionally omitted from deps; it only uses refs/state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interactionMode, question, status]);
+
+  useEffect(() => {
+    if (!interviewStartedRef.current) return;
+
+    const id = window.setInterval(() => {
+      const now = Date.now();
+
+      if (interviewEndsAtRef.current) {
+        const totalLeft = Math.max(0, Math.floor((interviewEndsAtRef.current - now) / 1000));
+        setTotalSecondsLeft(totalLeft);
+        if (totalLeft <= 0 && statusRef.current !== "done") {
+          void finishInterview(turnsRef.current, { endedReason: "time_limit" });
+          return;
+        }
+      }
+
+      if (questionEndsAtRef.current) {
+        const qLeft = Math.max(0, Math.floor((questionEndsAtRef.current - now) / 1000));
+        setQuestionSecondsLeft(qLeft);
+        if (qLeft <= 0 && statusRef.current === "idle" && questionRef.current.trim()) {
+          void submitAnswer({
+            question: questionRef.current,
+            answer: answerRef.current,
+            reason: "timeout",
+          });
+        }
+      } else {
+        // Safety net: if a question is visible but the timer wasn't armed for any reason,
+        // arm it so timeouts always submit.
+        if (statusRef.current === "idle" && questionRef.current.trim()) {
+          armQuestionTimer();
+        }
+      }
+    }, 300);
+
+    return () => window.clearInterval(id);
+    // finishInterview and submitAnswer omitted from deps intentionally (stable in practice).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interviewStarted]);
 
   async function finishInterview(
     forceTurns?: Turn[],
@@ -1060,8 +1650,20 @@ export default function InterviewClient() {
         setFinalReport(null);
         setAverageOverall(0);
         setMessage("Interview ended due to repeated proctoring violations.");
+
+        router.push("/interview/completed");
       } else {
-        setMessage("Answer at least one question before finishing.");
+        if (opts?.endedReason && opts.endedReason !== "manual_end") {
+          setStatus("done");
+          setQuestion("");
+          setAnswer("");
+          setFinalReport(null);
+          setAverageOverall(0);
+          setMessage("Interview complete.");
+          router.push("/interview/completed");
+        } else {
+          setMessage("Answer at least one question before finishing.");
+        }
       }
       return;
     }
@@ -1146,6 +1748,10 @@ export default function InterviewClient() {
     } catch {
       // ignore
     }
+
+    if (opts?.endedReason && opts.endedReason !== "manual_end") {
+      router.push("/interview/completed");
+    }
   }
 
   async function toggleListening() {
@@ -1164,10 +1770,17 @@ export default function InterviewClient() {
     }
   }
 
+  const shouldShowResumeLoader =
+    useResume &&
+    resumeText.trim() &&
+    (resumeProfileStatus === "loading" || (resumeProfileStatus === "idle" && !resumeProfile));
+
+  if (shouldShowResumeLoader) return <ResumeLoader active />;
+
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
-        <a href="/" className="flex items-center gap-3">
+        <Link href="/" className="flex items-center gap-3">
           <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-background">
             <span className="text-sm font-semibold">AI</span>
           </div>
@@ -1175,27 +1788,174 @@ export default function InterviewClient() {
             <div className="text-base font-semibold tracking-tight">Interview Simulator</div>
             <div className="text-xs text-foreground/70">Interview session</div>
           </div>
-        </a>
+        </Link>
 
         {interactionMode === "typing" || status === "done" ? (
-          <a
+          <Link
             href="/feedback"
             className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
           >
             View feedback
-          </a>
+          </Link>
         ) : (
-          <a
+          <Link
             href="/dashboard"
             className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
           >
             Dashboard
-          </a>
+          </Link>
         )}
       </header>
 
       <main className="mx-auto w-full max-w-6xl px-6 pb-14">
-        {interactionMode === "video" ? (
+        {!interviewStarted && !question.trim() && status !== "done" ? (
+          <section className="mx-auto grid max-w-3xl gap-6 py-8">
+            {readyToStart ? (
+              <div className="rounded-3xl border border-foreground/10 bg-background p-8 text-center">
+                <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-foreground text-background">
+                  <span className="text-base font-semibold">AI</span>
+                </div>
+                <h1 className="mt-4 text-balance text-2xl font-semibold tracking-tight">Ready to start</h1>
+                <p className="mt-2 text-pretty text-sm leading-6 text-foreground/70">
+                  {scheduleGate === "waiting" && scheduledSecondsLeft > 0
+                    ? `Your scheduled interview starts in ${formatMmSs(scheduledSecondsLeft)}.`
+                    : scheduleGate === "unknown"
+                      ? "Checking scheduled start time…"
+                      : "Click Start Interview to begin."}
+                </p>
+
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => void onStartInterview()}
+                    disabled={!canStartNow}
+                    className="inline-flex h-11 flex-1 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                  >
+                    Start Interview
+                  </button>
+                  <a
+                    href="/dashboard"
+                    className="inline-flex h-11 flex-1 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
+                  >
+                    Back to dashboard
+                  </a>
+                </div>
+
+                <div className="mt-4 text-sm text-foreground/70" aria-live="polite">
+                  {message || (startRequested ? "Starting…" : "")}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-3xl border border-foreground/10 bg-background p-6">
+                <div className="flex flex-col gap-2">
+                  <h1 className="text-2xl font-semibold tracking-tight">Setup</h1>
+                  <p className="text-sm leading-6 text-foreground/70">
+                    Allow camera/mic and load face detection. When everything is ready, you’ll see a Start button.
+                  </p>
+                </div>
+
+                <div className="mt-5 grid gap-3">
+                  <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                    <div className="text-sm font-medium">Load resume context</div>
+                    <div className="mt-1 text-sm text-foreground/70">
+                      {needsResume
+                        ? resumeProfileStatus === "ready"
+                          ? "Resume skills extracted."
+                          : resumeProfileStatus === "error"
+                            ? "Could not extract resume details. You can continue without it."
+                            : "Preparing resume profile…"
+                        : "No resume selected."}
+                    </div>
+                  </div>
+
+                  {interactionMode === "video" ? (
+                    <>
+                      <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium">Camera permission</div>
+                            <div className="mt-1 text-sm text-foreground/70">
+                              {cameraPermission === "granted"
+                                ? "Granted"
+                                : cameraPermission === "denied"
+                                  ? "Denied"
+                                  : "Not granted yet"}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void requestCameraPermission()}
+                            disabled={cameraPermission === "granted"}
+                            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                          >
+                            {cameraPermission === "granted" ? "Ready" : "Allow"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium">Microphone permission</div>
+                            <div className="mt-1 text-sm text-foreground/70">
+                              {micPermission === "granted"
+                                ? "Granted"
+                                : micPermission === "denied"
+                                  ? "Denied"
+                                  : "Not granted yet"}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void requestMicPermission()}
+                            disabled={micPermission === "granted"}
+                            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                          >
+                            {micPermission === "granted" ? "Ready" : "Allow"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium">Face detection</div>
+                            <div className="mt-1 text-sm text-foreground/70">
+                              {faceDetectionStatus === "ready"
+                                ? "Ready"
+                                : faceDetectionStatus === "loading"
+                                  ? "Loading…"
+                                  : faceDetectionStatus === "error"
+                                    ? "Unavailable"
+                                    : "Not loaded"}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void ensureFaceDetectionReady()}
+                            disabled={faceDetectionStatus === "ready" || faceDetectionStatus === "loading"}
+                            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                          >
+                            {faceDetectionStatus === "ready" ? "Ready" : faceDetectionStatus === "loading" ? "Loading…" : "Load"}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
+                      <div className="text-sm font-medium">Typing practice</div>
+                      <div className="mt-1 text-sm text-foreground/70">No camera/mic needed.</div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-4 text-sm text-foreground/70" aria-live="polite">
+                  {message}
+                </div>
+              </div>
+            )}
+          </section>
+        ) : interactionMode === "video" ? (
           <section className="grid gap-6 lg:grid-cols-2">
             <div className="rounded-3xl border border-foreground/10 bg-background p-6">
               <div className="flex items-start justify-between gap-4">
@@ -1283,17 +2043,9 @@ export default function InterviewClient() {
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <button
                     type="button"
-                    onClick={submitAnswer}
-                    disabled={status === "loading" || status === "evaluating" || status === "done"}
-                    className="inline-flex h-11 flex-1 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                  >
-                    {status === "evaluating" ? "Submitting…" : status === "done" ? "Interview complete" : "Submit response"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void finishInterview()}
+                    onClick={() => void finishInterview(undefined, { endedReason: "manual_end" })}
                     disabled={status === "loading" || status === "evaluating" || status === "done" || turns.length === 0}
-                    className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+                    className="inline-flex h-11 flex-1 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
                   >
                     End interview
                   </button>
@@ -1319,6 +2071,17 @@ export default function InterviewClient() {
                 </div>
               </div>
 
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                  <div className="text-xs text-foreground/60">Total time left</div>
+                  <div className="mt-1 text-lg font-semibold">{formatMmSs(totalSecondsLeft)}</div>
+                </div>
+                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                  <div className="text-xs text-foreground/60">Answer time left</div>
+                  <div className="mt-1 text-lg font-semibold">{formatMmSs(questionSecondsLeft)}</div>
+                </div>
+              </div>
+
               <div className="mt-4 overflow-hidden rounded-2xl border border-foreground/10 bg-background">
                 <div className="border-b border-foreground/10 px-4 py-2 text-xs text-foreground/70">Interviewer</div>
                 <div className="flex aspect-video items-center justify-center gap-3 bg-foreground/[0.03] p-6">
@@ -1332,7 +2095,7 @@ export default function InterviewClient() {
                         ? "Listening and taking notes…"
                         : question
                           ? "Please answer when you’re ready."
-                          : "Click Start to begin."}
+                          : "Starting…"}
                   </div>
                 </div>
               </div>
@@ -1342,16 +2105,15 @@ export default function InterviewClient() {
               </div>
 
               {!question && status !== "done" ? (
-                <div className="mt-4">
-                  <button
-                    type="button"
-                    onClick={getNextQuestion}
-                    disabled={status === "loading" || status === "evaluating"}
-                    className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                  >
-                    Start interview
-                  </button>
-                </div>
+                scheduleGate === "waiting" && scheduledSecondsLeft > 0 ? (
+                  <div className="mt-4 text-sm text-foreground/70">
+                    Scheduled interview starts in {formatMmSs(scheduledSecondsLeft)}.
+                  </div>
+                ) : scheduleGate === "unknown" ? (
+                  <div className="mt-4 text-sm text-foreground/70">Checking scheduled start time…</div>
+                ) : (
+                  <div className="mt-4 text-sm text-foreground/70">Preparing the first question…</div>
+                )
               ) : null}
 
               {status === "done" ? (
@@ -1365,13 +2127,25 @@ export default function InterviewClient() {
                     {finalReport ? (
                       <div className="mt-3 grid gap-3">
                         <div>
-                          <span className="font-medium">Overall:</span> {finalReport.overall_score}/10
+                          <span className="font-medium">Recommendation:</span> {finalReport.final_recommendation}
+                        </div>
+
+                        <div>
+                          <span className="font-medium">Candidate summary:</span> {finalReport.candidate_summary}
+                        </div>
+
+                        <div>
+                          <span className="font-medium">Technical knowledge:</span> {finalReport.technical_knowledge_score}/10
                           {" · "}
-                          <span className="font-medium">Technical:</span> {finalReport.technical_score}/10
+                          <span className="font-medium">Communication:</span> {finalReport.communication_skill_score}/10
                           {" · "}
-                          <span className="font-medium">Communication:</span> {finalReport.communication_score}/10
+                          <span className="font-medium">Confidence:</span> {finalReport.confidence_score}/10
                           {" · "}
-                          <span className="font-medium">Problem-solving:</span> {finalReport.problem_solving_score}/10
+                          <span className="font-medium">Problem solving:</span> {finalReport.problem_solving_score}/10
+                          {" · "}
+                          <span className="font-medium">English:</span> {finalReport.english_fluency_score}/10
+                          {" · "}
+                          <span className="font-medium">Project knowledge:</span> {finalReport.project_knowledge_score}/10
                         </div>
                         <div>
                           <span className="font-medium">Strengths:</span> {finalReport.strengths.join(" ")}
@@ -1379,14 +2153,6 @@ export default function InterviewClient() {
                         <div>
                           <span className="font-medium">Weaknesses:</span> {finalReport.weaknesses.join(" ")}
                         </div>
-                        <div>
-                          <span className="font-medium">Improvements:</span> {finalReport.improvement_suggestions.join(" ")}
-                        </div>
-                        {finalReport.recommended_focus_areas.length > 0 ? (
-                          <div>
-                            <span className="font-medium">Recommended focus areas:</span> {finalReport.recommended_focus_areas.join(", ")}
-                          </div>
-                        ) : null}
                       </div>
                     ) : (
                       <div className="mt-3 text-sm text-foreground/70">Could not generate an AI report. Average score is still shown.</div>
@@ -1468,6 +2234,17 @@ export default function InterviewClient() {
                   />
                 </label>
 
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                    <div className="text-xs text-foreground/60">Total time left</div>
+                    <div className="mt-1 text-lg font-semibold">{formatMmSs(totalSecondsLeft)}</div>
+                  </div>
+                  <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
+                    <div className="text-xs text-foreground/60">Answer time left</div>
+                    <div className="mt-1 text-lg font-semibold">{formatMmSs(questionSecondsLeft)}</div>
+                  </div>
+                </div>
+
                 <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
@@ -1534,22 +2311,12 @@ export default function InterviewClient() {
                   ) : null}
                 </div>
 
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <button
-                    type="button"
-                    onClick={getNextQuestion}
-                    disabled={status === "loading" || status === "evaluating" || status === "done"}
-                    className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                  >
-                    {question ? "New question" : "Generate question"}
-                  </button>
-                  <a
-                    href="/dashboard"
-                    className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
-                  >
-                    Dashboard
-                  </a>
-                </div>
+                <a
+                  href="/dashboard"
+                  className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
+                >
+                  Dashboard
+                </a>
 
                 <div className="text-sm text-foreground/70" aria-live="polite">
                   {message}
@@ -1561,7 +2328,7 @@ export default function InterviewClient() {
               <h2 className="text-xl font-semibold tracking-tight">Question</h2>
               <div className="mt-4">
                 <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm text-foreground/80">
-                  {question || "Generate a question to begin."}
+                  {question || "Preparing the first question…"}
                 </div>
               </div>
 
@@ -1579,18 +2346,13 @@ export default function InterviewClient() {
                   placeholder="Type your answer here…"
                 />
 
-                <button
-                  type="button"
-                  onClick={submitAnswer}
-                  disabled={status === "loading" || status === "evaluating" || status === "done"}
-                  className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                >
-                  {status === "evaluating" ? "Evaluating…" : status === "done" ? "Interview complete" : "Submit answer"}
-                </button>
+                <div className="text-sm text-foreground/70">
+                  Answers advance automatically when time ends.
+                </div>
 
                 <button
                   type="button"
-                  onClick={() => void finishInterview()}
+                  onClick={() => void finishInterview(undefined, { endedReason: "manual_end" })}
                   disabled={status === "loading" || status === "evaluating" || status === "done" || turns.length === 0}
                   className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
                 >
@@ -1641,13 +2403,25 @@ export default function InterviewClient() {
                       {finalReport ? (
                         <div className="mt-3 grid gap-3">
                           <div>
-                            <span className="font-medium">Overall:</span> {finalReport.overall_score}/10
+                            <span className="font-medium">Recommendation:</span> {finalReport.final_recommendation}
+                          </div>
+
+                          <div>
+                            <span className="font-medium">Candidate summary:</span> {finalReport.candidate_summary}
+                          </div>
+
+                          <div>
+                            <span className="font-medium">Technical knowledge:</span> {finalReport.technical_knowledge_score}/10
                             {" · "}
-                            <span className="font-medium">Technical:</span> {finalReport.technical_score}/10
+                            <span className="font-medium">Communication:</span> {finalReport.communication_skill_score}/10
                             {" · "}
-                            <span className="font-medium">Communication:</span> {finalReport.communication_score}/10
+                            <span className="font-medium">Confidence:</span> {finalReport.confidence_score}/10
                             {" · "}
-                            <span className="font-medium">Problem-solving:</span> {finalReport.problem_solving_score}/10
+                            <span className="font-medium">Problem solving:</span> {finalReport.problem_solving_score}/10
+                            {" · "}
+                            <span className="font-medium">English:</span> {finalReport.english_fluency_score}/10
+                            {" · "}
+                            <span className="font-medium">Project knowledge:</span> {finalReport.project_knowledge_score}/10
                           </div>
                           <div>
                             <span className="font-medium">Strengths:</span> {finalReport.strengths.join(" ")}
@@ -1655,14 +2429,6 @@ export default function InterviewClient() {
                           <div>
                             <span className="font-medium">Weaknesses:</span> {finalReport.weaknesses.join(" ")}
                           </div>
-                          <div>
-                            <span className="font-medium">Improvements:</span> {finalReport.improvement_suggestions.join(" ")}
-                          </div>
-                          {finalReport.recommended_focus_areas.length > 0 ? (
-                            <div>
-                              <span className="font-medium">Focus areas:</span> {finalReport.recommended_focus_areas.join(", ")}
-                            </div>
-                          ) : null}
                         </div>
                       ) : (
                         <div className="mt-3 text-sm text-foreground/70">Could not generate an AI report. Average score is still shown.</div>

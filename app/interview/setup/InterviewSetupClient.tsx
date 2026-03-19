@@ -71,12 +71,69 @@ export default function InterviewSetupClient() {
   const [resumeFile, setResumeFile] = useState<File | null>(null);
 
   const [startMode, setStartMode] = useState<"now" | "schedule">("now");
-  const [scheduledFor, setScheduledFor] = useState<string>("");
+  const [scheduledDate, setScheduledDate] = useState<string>("");
+  const [scheduledTime, setScheduledTime] = useState<string>("");
 
   const [status, setStatus] = useState<"idle" | "submitting" | "error">("idle");
   const [message, setMessage] = useState<string>("");
 
   const accept = useMemo(() => ".pdf,.doc,.docx", []);
+
+  const minScheduleDate = useMemo(() => {
+    const now = new Date();
+    const y = String(now.getFullYear());
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }, []);
+
+  const [availableTimeSlots, setAvailableTimeSlots] = useState<string[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      if (!scheduledDate) {
+        setAvailableTimeSlots([]);
+        return;
+      }
+
+      setSlotsLoading(true);
+      try {
+        const res = await fetch(`/api/interviews/slots?date=${encodeURIComponent(scheduledDate)}`, {
+          method: "GET",
+          credentials: "include",
+        });
+        const payload = (await res.json().catch(() => null)) as
+          | { ok: true; slots: string[] }
+          | { ok: false; error: string }
+          | null;
+
+        if (cancelled) return;
+        if (!res.ok || !payload || payload.ok === false) {
+          setAvailableTimeSlots([]);
+          return;
+        }
+
+        setAvailableTimeSlots(Array.isArray(payload.slots) ? payload.slots : []);
+      } catch {
+        if (!cancelled) setAvailableTimeSlots([]);
+      } finally {
+        if (!cancelled) setSlotsLoading(false);
+      }
+    }
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [scheduledDate]);
+
+  useEffect(() => {
+    // If the selected time is no longer available (e.g. user changes date), reset.
+    if (!scheduledTime) return;
+    if (availableTimeSlots.includes(scheduledTime)) return;
+    setScheduledTime("");
+  }, [availableTimeSlots, scheduledTime]);
 
   useEffect(() => {
     const existing = safeParseDetails(window.localStorage.getItem(DETAILS_KEY));
@@ -240,11 +297,21 @@ export default function InterviewSetupClient() {
 
   async function scheduleInterview() {
     try {
-      if (!scheduledFor.trim()) {
+      if (!scheduledDate.trim() || !scheduledTime.trim()) {
         setStatus("error");
-        setMessage("Please choose a date and time.");
+        setMessage("Please choose a date and an available time slot.");
         return;
       }
+
+      const scheduledLocal = new Date(`${scheduledDate}T${scheduledTime}`);
+      if (!Number.isFinite(scheduledLocal.getTime())) {
+        setStatus("error");
+        setMessage("Please choose a valid date and time.");
+        return;
+      }
+
+      // Always send ISO (timezone-safe) to the backend.
+      const scheduledForIso = scheduledLocal.toISOString();
 
       setStatus("submitting");
       setMessage("Scheduling…");
@@ -263,7 +330,7 @@ export default function InterviewSetupClient() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          scheduledFor,
+          scheduledFor: scheduledForIso,
           role,
           experience,
           type,
@@ -291,8 +358,10 @@ export default function InterviewSetupClient() {
         return;
       }
 
-      setMessage("Interview scheduled. You can start it from your dashboard.");
-      window.location.href = "/dashboard";
+      setMessage("Interview scheduled successfully. Redirecting to dashboard…");
+      window.setTimeout(() => {
+        window.location.href = "/dashboard";
+      }, 900);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Something went wrong. Please try again.";
       setStatus("error");
@@ -476,16 +545,52 @@ export default function InterviewSetupClient() {
               </label>
 
               {startMode === "schedule" ? (
-                <label className="sm:ml-auto">
-                  <span className="sr-only">Scheduled time</span>
-                  <input
-                    type="datetime-local"
-                    value={scheduledFor}
-                    onChange={(e) => setScheduledFor(e.target.value)}
-                    className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
-                    required
-                  />
-                </label>
+                <div className="grid gap-2 sm:ml-auto sm:grid-cols-2">
+                  <label className="grid gap-1">
+                    <span className="sr-only">Scheduled date</span>
+                    <input
+                      type="date"
+                      value={scheduledDate}
+                      min={minScheduleDate}
+                      onChange={(e) => {
+                        setScheduledDate(e.target.value);
+                        setMessage("");
+                        setStatus("idle");
+                      }}
+                      className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
+                      required
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="sr-only">Scheduled time</span>
+                    <select
+                      value={scheduledTime}
+                      onChange={(e) => {
+                        setScheduledTime(e.target.value);
+                        setMessage("");
+                        setStatus("idle");
+                      }}
+                      className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
+                      required
+                      disabled={!scheduledDate || availableTimeSlots.length === 0}
+                    >
+                      <option value="">
+                        {!scheduledDate
+                          ? "Pick a date first"
+                          : slotsLoading
+                            ? "Loading slots…"
+                            : availableTimeSlots.length === 0
+                              ? "No slots available"
+                              : "Select a time"}
+                      </option>
+                      {availableTimeSlots.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               ) : null}
             </div>
           </div>

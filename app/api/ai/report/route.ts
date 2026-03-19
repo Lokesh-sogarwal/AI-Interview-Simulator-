@@ -8,14 +8,16 @@ import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
 
 export type FinalReport = {
-  overall_score: number;
-  technical_score: number;
-  communication_score: number;
+  candidate_summary: string;
+  technical_knowledge_score: number;
+  communication_skill_score: number;
+  confidence_score: number;
   problem_solving_score: number;
+  english_fluency_score: number;
+  project_knowledge_score: number;
   strengths: string[];
   weaknesses: string[];
-  improvement_suggestions: string[];
-  recommended_focus_areas: string[];
+  final_recommendation: "Hire" | "No Hire";
 };
 
 function clamp0to10(value: number) {
@@ -31,21 +33,40 @@ function mean(values: number[]) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-function normalizeReport(report: FinalReport, computed: {
-  avgOverall: number;
-  avgTechnical: number;
-  avgCommunication: number;
-  avgProblemSolving: number;
-}): FinalReport {
-  const avgOverall = clamp0to10(round1(computed.avgOverall));
-  const avgTechnical = clamp0to10(round1(computed.avgTechnical));
-  const avgCommunication = clamp0to10(round1(computed.avgCommunication));
+function normalizeReport(
+  report: FinalReport,
+  computed: {
+    avgTechnicalKnowledge: number;
+    avgCommunicationSkill: number;
+    avgConfidence: number;
+    avgProblemSolving: number;
+    avgEnglishFluency: number;
+    avgProjectKnowledge: number;
+  },
+): FinalReport {
+  const avgTechnicalKnowledge = clamp0to10(round1(computed.avgTechnicalKnowledge));
+  const avgCommunicationSkill = clamp0to10(round1(computed.avgCommunicationSkill));
+  const avgConfidence = clamp0to10(round1(computed.avgConfidence));
   const avgProblemSolving = clamp0to10(round1(computed.avgProblemSolving));
+  const avgEnglishFluency = clamp0to10(round1(computed.avgEnglishFluency));
+  const avgProjectKnowledge = clamp0to10(round1(computed.avgProjectKnowledge));
 
-  const overall = clamp0to10(Number(report.overall_score ?? avgOverall));
-  const technical = clamp0to10(Number(report.technical_score ?? avgTechnical));
-  const communication = clamp0to10(Number(report.communication_score ?? avgCommunication));
-  const problemSolving = clamp0to10(Number(report.problem_solving_score ?? avgProblemSolving));
+  const technical = clamp0to10(
+    Number(report.technical_knowledge_score ?? avgTechnicalKnowledge),
+  );
+  const communication = clamp0to10(
+    Number(report.communication_skill_score ?? avgCommunicationSkill),
+  );
+  const confidence = clamp0to10(Number(report.confidence_score ?? avgConfidence));
+  const problemSolving = clamp0to10(
+    Number(report.problem_solving_score ?? avgProblemSolving),
+  );
+  const english = clamp0to10(
+    Number(report.english_fluency_score ?? avgEnglishFluency),
+  );
+  const project = clamp0to10(
+    Number(report.project_knowledge_score ?? avgProjectKnowledge),
+  );
 
   const strengths = Array.isArray(report.strengths)
     ? report.strengths.map(String).filter(Boolean).slice(0, 8)
@@ -53,77 +74,89 @@ function normalizeReport(report: FinalReport, computed: {
   const weaknesses = Array.isArray(report.weaknesses)
     ? report.weaknesses.map(String).filter(Boolean).slice(0, 8)
     : [];
-  const improvement = Array.isArray(report.improvement_suggestions)
-    ? report.improvement_suggestions.map(String).filter(Boolean).slice(0, 10)
-    : [];
-  const focus = Array.isArray(report.recommended_focus_areas)
-    ? report.recommended_focus_areas.map(String).filter(Boolean).slice(0, 10)
-    : [];
+  const summary =
+    typeof report.candidate_summary === "string" ? report.candidate_summary.trim() : "";
+
+  const recommendation =
+    report.final_recommendation === "Hire" || report.final_recommendation === "No Hire"
+      ? report.final_recommendation
+      : null;
 
   // Guard against inflated scores: if model returns numbers far above computed averages,
   // snap scores back to computed values.
-  const snapIfTooHigh = (val: number, computedVal: number) => (val - computedVal >= 1.5 ? computedVal : val);
+  const snapIfTooHigh = (val: number, computedVal: number) =>
+    val - computedVal >= 1.5 ? computedVal : val;
+
+  const derivedAvg = mean([technical, communication, confidence, problemSolving, english, project]);
+  const derivedRecommendation: FinalReport["final_recommendation"] =
+    derivedAvg >= 6.8 && technical >= 6 && communication >= 6 ? "Hire" : "No Hire";
 
   return {
-    overall_score: snapIfTooHigh(overall, avgOverall),
-    technical_score: snapIfTooHigh(technical, avgTechnical),
-    communication_score: snapIfTooHigh(communication, avgCommunication),
+    candidate_summary:
+      summary || "Candidate summary not available from transcript.",
+    technical_knowledge_score: snapIfTooHigh(technical, avgTechnicalKnowledge),
+    communication_skill_score: snapIfTooHigh(communication, avgCommunicationSkill),
+    confidence_score: snapIfTooHigh(confidence, avgConfidence),
     problem_solving_score: snapIfTooHigh(problemSolving, avgProblemSolving),
+    english_fluency_score: snapIfTooHigh(english, avgEnglishFluency),
+    project_knowledge_score: snapIfTooHigh(project, avgProjectKnowledge),
     strengths,
     weaknesses,
-    improvement_suggestions: improvement,
-    recommended_focus_areas: focus,
+    final_recommendation: recommendation ?? derivedRecommendation,
   };
 }
 
 function fallbackReport(params: {
-  avgOverall: number;
-  avgTechnical: number;
-  avgCommunication: number;
+  avgTechnicalKnowledge: number;
+  avgCommunicationSkill: number;
+  avgConfidence: number;
   avgProblemSolving: number;
-  focusAreas?: string;
+  avgEnglishFluency: number;
+  avgProjectKnowledge: number;
 }): FinalReport {
   const strengths: string[] = [];
   const weaknesses: string[] = [];
-  const improvement_suggestions: string[] = [];
+  const avg = mean([
+    params.avgTechnicalKnowledge,
+    params.avgCommunicationSkill,
+    params.avgConfidence,
+    params.avgProblemSolving,
+    params.avgEnglishFluency,
+    params.avgProjectKnowledge,
+  ]);
 
-  if (params.avgOverall >= 7) strengths.push("You maintained a strong overall performance across questions.");
-  else if (params.avgOverall >= 5) strengths.push("You covered the core points, with room to improve depth and clarity.");
+  if (avg >= 7) strengths.push("You maintained a strong overall performance across questions.");
+  else if (avg >= 5) strengths.push("You covered the core points, with room to improve depth and clarity.");
   else strengths.push("You showed effort, but answers often lacked clarity and specificity.");
 
-  if (params.avgTechnical >= 7) strengths.push("Technical reasoning was generally solid.");
-  else if (params.avgTechnical <= 4) weaknesses.push("Technical explanations were often shallow or inaccurate.");
+  if (params.avgTechnicalKnowledge >= 7) strengths.push("Technical knowledge was generally solid.");
+  else if (params.avgTechnicalKnowledge <= 4) weaknesses.push("Technical explanations were often shallow or inaccurate.");
 
-  if (params.avgCommunication >= 7) strengths.push("Communication was clear and confident.");
-  else if (params.avgCommunication <= 4) weaknesses.push("Communication lacked structure or confidence.");
+  if (params.avgCommunicationSkill >= 7) strengths.push("Communication was clear and professional.");
+  else if (params.avgCommunicationSkill <= 4) weaknesses.push("Communication lacked structure or clarity.");
 
   if (params.avgProblemSolving >= 7) strengths.push("Problem-solving depth and reasoning were strong.");
   else if (params.avgProblemSolving <= 4) weaknesses.push("Problem-solving steps and trade-offs were often unclear.");
 
   if (weaknesses.length === 0) weaknesses.push("Some answers could be more specific and backed by concrete examples.");
 
-  improvement_suggestions.push(
-    "Use a simple structure: context → approach → trade-offs → result.",
-    "Add one concrete example (numbers, constraints, or impact) in each answer.",
-  );
-
-  const recommended_focus_areas = params.focusAreas
-    ? params.focusAreas
-        .split(/[,;\n]/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .slice(0, 6)
-    : [];
+  const final_recommendation: FinalReport["final_recommendation"] =
+    avg >= 6.8 && params.avgTechnicalKnowledge >= 6 && params.avgCommunicationSkill >= 6
+      ? "Hire"
+      : "No Hire";
 
   return {
-    overall_score: clamp0to10(round1(params.avgOverall)),
-    technical_score: clamp0to10(round1(params.avgTechnical)),
-    communication_score: clamp0to10(round1(params.avgCommunication)),
+    candidate_summary:
+      "Based on the transcript, the candidate showed their current level of knowledge and communication under interview conditions.",
+    technical_knowledge_score: clamp0to10(round1(params.avgTechnicalKnowledge)),
+    communication_skill_score: clamp0to10(round1(params.avgCommunicationSkill)),
+    confidence_score: clamp0to10(round1(params.avgConfidence)),
     problem_solving_score: clamp0to10(round1(params.avgProblemSolving)),
+    english_fluency_score: clamp0to10(round1(params.avgEnglishFluency)),
+    project_knowledge_score: clamp0to10(round1(params.avgProjectKnowledge)),
     strengths,
     weaknesses,
-    improvement_suggestions,
-    recommended_focus_areas,
+    final_recommendation,
   };
 }
 
@@ -146,6 +179,8 @@ export async function POST(request: Request) {
             clarity_score?: number;
             confidence_score?: number;
             depth_score?: number;
+            english_fluency_score?: number;
+            project_knowledge_score?: number;
           };
         }>;
         type?: InterviewType;
@@ -172,11 +207,20 @@ export async function POST(request: Request) {
   const clarityScores = evals.map((e) => Number(e.clarity_score ?? 0)).filter((n) => Number.isFinite(n));
   const confidenceScores = evals.map((e) => Number(e.confidence_score ?? 0)).filter((n) => Number.isFinite(n));
   const depthScores = evals.map((e) => Number(e.depth_score ?? 0)).filter((n) => Number.isFinite(n));
+  const englishScores = evals
+    .map((e) => Number(e.english_fluency_score ?? 0))
+    .filter((n) => Number.isFinite(n));
+  const projectScores = evals
+    .map((e) => Number(e.project_knowledge_score ?? 0))
+    .filter((n) => Number.isFinite(n));
 
   const avgOverall = mean(overallScores);
-  const avgTechnical = mean(technicalScores);
-  const avgCommunication = mean([...clarityScores, ...confidenceScores]);
+  const avgTechnicalKnowledge = mean(technicalScores);
+  const avgCommunicationSkill = mean([...clarityScores, ...confidenceScores]);
+  const avgConfidence = mean(confidenceScores);
   const avgProblemSolving = mean(depthScores);
+  const avgEnglishFluency = mean(englishScores);
+  const avgProjectKnowledge = mean(projectScores);
 
   if (turns.length === 0) {
     return Response.json(
@@ -197,14 +241,16 @@ export async function POST(request: Request) {
     "Respond ONLY with valid JSON and no extra text.",
     "Use this exact schema:",
     "{",
-    '  "overall_score": number,',
-    '  "technical_score": number,',
-    '  "communication_score": number,',
+    '  "candidate_summary": string,',
+    '  "technical_knowledge_score": number,',
+    '  "communication_skill_score": number,',
+    '  "confidence_score": number,',
     '  "problem_solving_score": number,',
+    '  "english_fluency_score": number,',
+    '  "project_knowledge_score": number,',
     '  "strengths": string[],',
     '  "weaknesses": string[],',
-    '  "improvement_suggestions": string[],',
-    '  "recommended_focus_areas": string[]',
+    '  "final_recommendation": "Hire" | "No Hire"',
     "}",
   ].join("\n");
 
@@ -218,9 +264,12 @@ export async function POST(request: Request) {
     "",
     "Scoring summary (computed):",
     `Average overall score: ${round1(avgOverall)}/10`,
-    `Average technical score: ${round1(avgTechnical)}/10`,
-    `Average communication score (from clarity+confidence): ${round1(avgCommunication)}/10`,
+    `Average technical knowledge score: ${round1(avgTechnicalKnowledge)}/10`,
+    `Average communication skill score (from clarity+confidence): ${round1(avgCommunicationSkill)}/10`,
+    `Average confidence score: ${round1(avgConfidence)}/10`,
     `Average problem-solving score (from depth): ${round1(avgProblemSolving)}/10`,
+    `Average English fluency score: ${round1(avgEnglishFluency)}/10`,
+    `Average project knowledge score: ${round1(avgProjectKnowledge)}/10`,
     "",
     "Transcript (latest first is fine):",
     JSON.stringify(
@@ -232,6 +281,9 @@ export async function POST(request: Request) {
     ),
     "",
     "Create a concise report card. Keep items concrete and actionable.",
+    "Recommendation rule of thumb:",
+    "- If multiple answers are incorrect/irrelevant or communication is weak, recommend No Hire.",
+    "- Recommend Hire only if technical knowledge AND communication are both strong enough for the stated experience level.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -249,10 +301,12 @@ export async function POST(request: Request) {
     const parsed = safeJsonParse<FinalReport>(ai.text);
     if (parsed) {
       const normalized = normalizeReport(parsed, {
-        avgOverall,
-        avgTechnical,
-        avgCommunication,
+        avgTechnicalKnowledge,
+        avgCommunicationSkill,
+        avgConfidence,
         avgProblemSolving,
+        avgEnglishFluency,
+        avgProjectKnowledge,
       });
       return Response.json({ ok: true, report: normalized, source: ai.provider });
     }
@@ -261,11 +315,12 @@ export async function POST(request: Request) {
   return Response.json({
     ok: true,
     report: fallbackReport({
-      avgOverall,
-      avgTechnical,
-      avgCommunication,
+      avgTechnicalKnowledge,
+      avgCommunicationSkill,
+      avgConfidence,
       avgProblemSolving,
-      focusAreas,
+      avgEnglishFluency,
+      avgProjectKnowledge,
     }),
     source: "fallback",
   });
