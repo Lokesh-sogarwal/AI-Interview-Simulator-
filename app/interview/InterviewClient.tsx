@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 
 import type { Difficulty, InterviewType } from "@/lib/prompts";
 import { adjustDifficulty } from "@/lib/prompts";
@@ -10,7 +9,9 @@ import type { Evaluation } from "@/app/api/ai/evaluate/route";
 import type { FinalReport } from "@/app/api/ai/report/route";
 import type { ResumeProfile } from "@/app/api/resume/profile/route";
 import { createFaceDetector, type FaceDetectorApi } from "./faceDetector";
-import ResumeLoader from "./components/ResumeLoader";
+import Loader from "./components/Loader";
+import SetupScreen from "./components/SetupScreen";
+import InterviewScreen from "./components/InterviewScreen";
 
 type Turn = {
   question: string;
@@ -56,8 +57,6 @@ const INTRO_QUESTION = "Tell me about yourself.";
 const TOTAL_INTERVIEW_SECONDS = 10 * 60;
 const QUESTION_SECONDS = 60;
 const VIDEO_TARGET_QUESTIONS = Math.max(1, Math.floor(TOTAL_INTERVIEW_SECONDS / QUESTION_SECONDS));
-
-const SILENCE_WARNING_MS = 8000;
 
 function formatMmSs(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -179,11 +178,6 @@ export default function InterviewClient() {
   const speakTokenRef = useRef(0);
 
   const lastDictationAtRef = useRef<number>(0);
-  const questionShownAtRef = useRef<number>(0);
-  const nudgedForQuestionRef = useRef<string>("");
-  const nudgeInFlightRef = useRef(false);
-  const dictationFinalRef = useRef<string>("");
-  const dictationInterimRef = useRef<string>("");
   const silenceWarningIssuedRef = useRef(false);
   const spokeAfterSilenceWarningRef = useRef(false);
   const autoSubmitInFlightRef = useRef(false);
@@ -204,6 +198,7 @@ export default function InterviewClient() {
   const autoSubmitTriggeredRef = useRef(false);
   const lastSpokenQuestionRef = useRef<string>("");
   const warnedNoFullscreenRef = useRef(false);
+  const pauseWarnedQuestionRef = useRef<string>("");
 
   const followUpsAskedRef = useRef(0);
 
@@ -245,11 +240,6 @@ export default function InterviewClient() {
     lastDictationAtRef.current = 0;
     silenceWarningIssuedRef.current = false;
     spokeAfterSilenceWarningRef.current = false;
-    questionShownAtRef.current = Date.now();
-    nudgedForQuestionRef.current = "";
-    nudgeInFlightRef.current = false;
-    dictationFinalRef.current = "";
-    dictationInterimRef.current = "";
   }, [question]);
 
   const recordViolation = useCallback((reason: string, opts?: { count?: boolean }) => {
@@ -393,7 +383,7 @@ export default function InterviewClient() {
 
       synth.cancel();
       const utter = new SpeechSynthesisUtterance(trimmed);
-      utter.lang = "en-IN";
+      utter.lang = "en-US";
       utter.voice = preferredVoiceRef.current ?? null;
 
       // Slightly slower, more human cadence.
@@ -567,7 +557,7 @@ export default function InterviewClient() {
 
     try {
       const anonId = getOrCreateAnonId();
-      const res = await fetch("/api/start-interview", {
+      const res = await fetch("/api/interviews/session", {
         method: "POST",
         credentials: "include",
         headers: {
@@ -1013,9 +1003,7 @@ export default function InterviewClient() {
         }
 
         audioStreamRef.current = stream;
-        const w = window as unknown as { webkitAudioContext?: typeof AudioContext };
-        const AudioCtor = window.AudioContext ?? w.webkitAudioContext;
-        const ctx = new AudioCtor();
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
         audioContextRef.current = ctx;
         const source = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
@@ -1093,85 +1081,22 @@ export default function InterviewClient() {
     return true;
   }
 
-  const requestNudge = useCallback(async () => {
-    function isOkNudgePayload(value: unknown): value is { ok: true; nudge: string } {
-      if (!value || typeof value !== "object") return false;
-      if ((value as { ok?: unknown }).ok !== true) return false;
-      return typeof (value as { nudge?: unknown }).nudge === "string";
-    }
-
-    if (nudgeInFlightRef.current) return;
-    if (statusRef.current !== "idle") return;
-    if (speakingRef.current) return;
-
-    const q = questionRef.current.trim();
-    if (!q) return;
-    if (nudgedForQuestionRef.current === q) return;
-
-    const now = Date.now();
-    const lastSpeech = lastDictationAtRef.current || questionShownAtRef.current || now;
-    const silentFor = now - lastSpeech;
-    if (silentFor < 12_000) return;
-
-    nudgedForQuestionRef.current = q;
-    nudgeInFlightRef.current = true;
-
-    try {
-      const res = await fetch("/api/next-question", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "nudge",
-          type,
-          difficulty,
-          role,
-          experience,
-          company,
-          focusAreas,
-          resumeText: useResume ? resumeText : "",
-          resumeProfile: useResume ? resumeProfile : null,
-          previousQuestions: turnsRef.current.map((t) => t.question).filter(Boolean),
-          question: q,
-          partialAnswer: answerRef.current,
-        }),
-      });
-
-      const payload = (await res.json().catch(() => null)) as
-        | { ok: true; nudge: string }
-        | { ok: false; error: string }
-        | null;
-
-      const nudge = isOkNudgePayload(payload) ? payload.nudge.trim() : "";
-      if (!nudge) return;
-
-      setMessage(nudge);
-      if (voiceEnabledRef.current) {
-        await speak(nudge);
-      }
-    } catch {
-      // ignore
-    } finally {
-      nudgeInFlightRef.current = false;
-    }
-  }, [company, difficulty, experience, focusAreas, role, speak, type, useResume, resumeProfile, resumeText]);
-
   useEffect(() => {
     if (interactionMode !== "video") return;
     if (!proctorEnabled) return;
     if (!question.trim()) return;
     if (status !== "idle") return;
-    if (statusRef.current !== "idle") return;
+    if (answer.trim()) return;
+    if (pauseWarnedQuestionRef.current === question) return;
 
-    const id = window.setInterval(() => {
-      if (interactionMode !== "video") return;
-      if (statusRef.current !== "idle") return;
-      if (speakingRef.current) return;
-      if (!questionRef.current.trim()) return;
-      void requestNudge();
-    }, 900);
+    const id = window.setTimeout(() => {
+      if (pauseWarnedQuestionRef.current === question) return;
+      pauseWarnedQuestionRef.current = question;
+      recordViolation("Long pause detected. Please continue when ready.", { count: false });
+    }, 75000);
 
-    return () => window.clearInterval(id);
-  }, [interactionMode, proctorEnabled, question, status, requestNudge]);
+    return () => window.clearTimeout(id);
+  }, [interactionMode, proctorEnabled, question, status, answer, recordViolation]);
 
   useEffect(() => {
     if (!voiceEnabled) {
@@ -1190,42 +1115,24 @@ export default function InterviewClient() {
       return;
     }
 
-    recognition.lang = "en-IN";
+    recognition.lang = "en-US";
     recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onresult = (event) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const e = event as any;
-      const results = e.results;
-      if (!results || typeof results.length !== "number") return;
+      const last = e.results?.[e.results.length - 1];
+      const text = last?.[0]?.transcript;
+      const isFinal = Boolean(last?.isFinal);
+      if (!isFinal || typeof text !== "string") return;
 
-      let finalAdd = "";
-      let interim = "";
-      const startIndex = typeof e.resultIndex === "number" ? e.resultIndex : Math.max(0, results.length - 1);
-
-      for (let i = startIndex; i < results.length; i += 1) {
-        const r = results[i];
-        const transcript = r?.[0]?.transcript;
-        if (typeof transcript !== "string") continue;
-        if (r.isFinal) finalAdd += ` ${transcript}`;
-        else interim += transcript;
-      }
-
-      if (!dictationFinalRef.current.trim() && answerRef.current.trim()) {
-        dictationFinalRef.current = answerRef.current.trim();
-      }
-
-      if (finalAdd.trim()) {
-        dictationFinalRef.current = `${dictationFinalRef.current} ${finalAdd}`.replace(/\s+/g, " ").trim();
-      }
-      dictationInterimRef.current = interim.replace(/\s+/g, " ").trim();
-
-      const combined = [dictationFinalRef.current, dictationInterimRef.current].filter(Boolean).join(" ").trim();
-      if (combined) setAnswer(combined);
-
+      setAnswer((prev) => (prev ? `${prev} ${text}` : text).trim());
       lastDictationAtRef.current = Date.now();
-      if (silenceWarningIssuedRef.current) spokeAfterSilenceWarningRef.current = true;
+
+      if (silenceWarningIssuedRef.current) {
+        spokeAfterSilenceWarningRef.current = true;
+      }
     };
 
     recognition.onerror = () => {
@@ -1235,19 +1142,6 @@ export default function InterviewClient() {
 
     recognition.onend = () => {
       setListening(false);
-      // Keep the experience "live": auto-restart recognition when appropriate.
-      if (!voiceEnabledRef.current) return;
-      if (statusRef.current !== "idle") return;
-      if (speakingRef.current) return;
-      if (!questionRef.current.trim()) return;
-      window.setTimeout(() => {
-        try {
-          recognitionRef.current?.start();
-          setListening(true);
-        } catch {
-          // ignore
-        }
-      }, 150);
     };
   }, [voiceEnabled]);
 
@@ -1302,7 +1196,7 @@ export default function InterviewClient() {
       if (!last) return;
 
       const silentFor = Date.now() - last;
-      if (silentFor < SILENCE_WARNING_MS) return;
+      if (silentFor < 2000) return;
 
       if (!silenceWarningIssuedRef.current) {
         silenceWarningIssuedRef.current = true;
@@ -1329,23 +1223,27 @@ export default function InterviewClient() {
     setStatus("loading");
     setMessage(interactionMode === "video" ? "Interviewer is preparing the next question…" : "Generating a question…");
 
-    // Create DB session as early as possible (non-blocking).
-    void ensureInterviewSession();
+    const id = await ensureInterviewSession();
+    if (!id) {
+      setStatus("idle");
+      setMessage("Could not start an interview session. Please try again.");
+      return;
+    }
 
     const response = await fetch("/api/next-question", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        mode: "question",
+        interviewId: id,
         type,
         difficulty,
         role,
         experience,
         company,
         focusAreas,
+        useResume,
         resumeText: useResume ? resumeText : "",
         resumeProfile: useResume ? resumeProfile : null,
-        previousQuestions: turnsRef.current.map((t) => t.question).filter(Boolean),
       }),
     });
 
@@ -1381,15 +1279,61 @@ export default function InterviewClient() {
     followUpsAskedRef.current = 0;
     lastSpokenQuestionRef.current = "";
 
-    startInterviewTimers();
-
-    // Create DB session as early as possible (non-blocking).
-    void ensureInterviewSession();
-
     setAnswer("");
-    setStatus("idle");
-    setMessage(interactionMode === "video" ? "Starting interview…" : "Starting…");
-    setQuestion(INTRO_QUESTION);
+    setStatus("loading");
+    setMessage("Interview starting…");
+
+    // Small human-like delay before the first question.
+    await new Promise((r) => window.setTimeout(r, 2200));
+
+    try {
+      const res = await fetch("/api/start-interview", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interviewId: interviewId || undefined,
+          type,
+          difficulty: difficultySetting,
+          role,
+          experience,
+          company,
+          focusAreas,
+          interactionMode,
+          useResume,
+          resumeText: useResume ? resumeText : "",
+          resumeProfile: useResume ? resumeProfile : null,
+        }),
+      });
+
+      const payload = (await res.json().catch(() => null)) as
+        | { ok: true; interviewId: string; question: string }
+        | { ok: false; error: string; secondsLeft?: number }
+        | null;
+
+      if (!res.ok || !payload || payload.ok === false) {
+        setStatus("idle");
+        const msg = payload && payload.ok === false && payload.error ? payload.error : "Could not start the interview.";
+        setMessage(msg);
+        return;
+      }
+
+      startInterviewTimers();
+
+      setInterviewId(payload.interviewId);
+      try {
+        window.localStorage.setItem(INTERVIEW_ID_KEY, payload.interviewId);
+      } catch {
+        // ignore
+      }
+
+      setQuestion(payload.question || INTRO_QUESTION);
+      setStatus("idle");
+      setMessage("");
+    } catch {
+      setStatus("idle");
+      setMessage("Could not start the interview. Please try again.");
+    }
   }
 
   const onStartInterview = useCallback(async () => {
@@ -1770,17 +1714,44 @@ export default function InterviewClient() {
     }
   }
 
+  const resumeLoaderPhrases = useMemo(
+    () => [
+      "Analyzing Resume…",
+      "Extracting Skills…",
+      "Reviewing Projects…",
+      "Preparing Personalized Questions…",
+    ],
+    [],
+  );
+  const [resumeLoaderIndex, setResumeLoaderIndex] = useState(0);
+
+  useEffect(() => {
+    if (resumeProfileStatus !== "loading") return;
+    const id = window.setInterval(() => {
+      setResumeLoaderIndex((i) => (i + 1) % resumeLoaderPhrases.length);
+    }, 1200);
+    return () => window.clearInterval(id);
+  }, [resumeLoaderPhrases.length, resumeProfileStatus]);
+
   const shouldShowResumeLoader =
     useResume &&
     resumeText.trim() &&
     (resumeProfileStatus === "loading" || (resumeProfileStatus === "idle" && !resumeProfile));
 
-  if (shouldShowResumeLoader) return <ResumeLoader active />;
+  if (shouldShowResumeLoader) {
+    return (
+      <Loader
+        title="Preparing your interview"
+        subtitle="This usually takes a few seconds."
+        phrase={resumeLoaderPhrases[resumeLoaderIndex]}
+      />
+    );
+  }
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
-        <Link href="/" className="flex items-center gap-3">
+        <a href="/" className="flex items-center gap-3">
           <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-background">
             <span className="text-sm font-semibold">AI</span>
           </div>
@@ -1788,175 +1759,66 @@ export default function InterviewClient() {
             <div className="text-base font-semibold tracking-tight">Interview Simulator</div>
             <div className="text-xs text-foreground/70">Interview session</div>
           </div>
-        </Link>
+        </a>
 
         {interactionMode === "typing" || status === "done" ? (
-          <Link
+          <a
             href="/feedback"
             className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
           >
             View feedback
-          </Link>
+          </a>
         ) : (
-          <Link
+          <a
             href="/dashboard"
             className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
           >
             Dashboard
-          </Link>
+          </a>
         )}
       </header>
 
       <main className="mx-auto w-full max-w-6xl px-6 pb-14">
         {!interviewStarted && !question.trim() && status !== "done" ? (
-          <section className="mx-auto grid max-w-3xl gap-6 py-8">
-            {readyToStart ? (
-              <div className="rounded-3xl border border-foreground/10 bg-background p-8 text-center">
-                <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-foreground text-background">
-                  <span className="text-base font-semibold">AI</span>
-                </div>
-                <h1 className="mt-4 text-balance text-2xl font-semibold tracking-tight">Ready to start</h1>
-                <p className="mt-2 text-pretty text-sm leading-6 text-foreground/70">
-                  {scheduleGate === "waiting" && scheduledSecondsLeft > 0
-                    ? `Your scheduled interview starts in ${formatMmSs(scheduledSecondsLeft)}.`
-                    : scheduleGate === "unknown"
-                      ? "Checking scheduled start time…"
-                      : "Click Start Interview to begin."}
-                </p>
-
-                <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                  <button
-                    type="button"
-                    onClick={() => void onStartInterview()}
-                    disabled={!canStartNow}
-                    className="inline-flex h-11 flex-1 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                  >
-                    Start Interview
-                  </button>
-                  <a
-                    href="/dashboard"
-                    className="inline-flex h-11 flex-1 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
-                  >
-                    Back to dashboard
-                  </a>
-                </div>
-
-                <div className="mt-4 text-sm text-foreground/70" aria-live="polite">
-                  {message || (startRequested ? "Starting…" : "")}
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-3xl border border-foreground/10 bg-background p-6">
-                <div className="flex flex-col gap-2">
-                  <h1 className="text-2xl font-semibold tracking-tight">Setup</h1>
-                  <p className="text-sm leading-6 text-foreground/70">
-                    Allow camera/mic and load face detection. When everything is ready, you’ll see a Start button.
-                  </p>
-                </div>
-
-                <div className="mt-5 grid gap-3">
-                  <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                    <div className="text-sm font-medium">Load resume context</div>
-                    <div className="mt-1 text-sm text-foreground/70">
-                      {needsResume
-                        ? resumeProfileStatus === "ready"
-                          ? "Resume skills extracted."
-                          : resumeProfileStatus === "error"
-                            ? "Could not extract resume details. You can continue without it."
-                            : "Preparing resume profile…"
-                        : "No resume selected."}
-                    </div>
-                  </div>
-
-                  {interactionMode === "video" ? (
-                    <>
-                      <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-medium">Camera permission</div>
-                            <div className="mt-1 text-sm text-foreground/70">
-                              {cameraPermission === "granted"
-                                ? "Granted"
-                                : cameraPermission === "denied"
-                                  ? "Denied"
-                                  : "Not granted yet"}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void requestCameraPermission()}
-                            disabled={cameraPermission === "granted"}
-                            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                          >
-                            {cameraPermission === "granted" ? "Ready" : "Allow"}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-medium">Microphone permission</div>
-                            <div className="mt-1 text-sm text-foreground/70">
-                              {micPermission === "granted"
-                                ? "Granted"
-                                : micPermission === "denied"
-                                  ? "Denied"
-                                  : "Not granted yet"}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void requestMicPermission()}
-                            disabled={micPermission === "granted"}
-                            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                          >
-                            {micPermission === "granted" ? "Ready" : "Allow"}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-medium">Face detection</div>
-                            <div className="mt-1 text-sm text-foreground/70">
-                              {faceDetectionStatus === "ready"
-                                ? "Ready"
-                                : faceDetectionStatus === "loading"
-                                  ? "Loading…"
-                                  : faceDetectionStatus === "error"
-                                    ? "Unavailable"
-                                    : "Not loaded"}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void ensureFaceDetectionReady()}
-                            disabled={faceDetectionStatus === "ready" || faceDetectionStatus === "loading"}
-                            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                          >
-                            {faceDetectionStatus === "ready" ? "Ready" : faceDetectionStatus === "loading" ? "Loading…" : "Load"}
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                      <div className="text-sm font-medium">Typing practice</div>
-                      <div className="mt-1 text-sm text-foreground/70">No camera/mic needed.</div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-4 text-sm text-foreground/70" aria-live="polite">
-                  {message}
-                </div>
-              </div>
-            )}
-          </section>
-        ) : interactionMode === "video" ? (
-          <section className="grid gap-6 lg:grid-cols-2">
+          <SetupScreen
+            readyToStart={readyToStart}
+            canStartNow={canStartNow}
+            scheduleMessage={
+              scheduleGate === "waiting" && scheduledSecondsLeft > 0
+                ? `Your scheduled interview starts in ${formatMmSs(scheduledSecondsLeft)}.`
+                : scheduleGate === "unknown"
+                  ? "Checking scheduled start time…"
+                  : "Click Start Interview to begin."
+            }
+            message={message}
+            startRequested={startRequested}
+            interactionMode={interactionMode}
+            needsResume={needsResume}
+            resumeStatusText={
+              needsResume
+                ? resumeProfileStatus === "ready"
+                  ? "Resume skills extracted."
+                  : resumeProfileStatus === "error"
+                    ? "Could not extract resume details. You can continue without it."
+                    : "Preparing resume profile…"
+                : "No resume selected."
+            }
+            cameraPermission={cameraPermission}
+            micPermission={micPermission}
+            faceDetectionStatus={faceDetectionStatus}
+            onStartInterview={() => void onStartInterview()}
+            onBack={() => {
+              window.location.href = "/dashboard";
+            }}
+            onRequestCamera={() => void requestCameraPermission()}
+            onRequestMic={() => void requestMicPermission()}
+            onLoadFaceDetection={() => void ensureFaceDetectionReady()}
+          />
+        ) : (
+          <InterviewScreen
+            interactionMode={interactionMode}
+            video={(
+              <section className="grid gap-6 lg:grid-cols-2">
             <div className="rounded-3xl border border-foreground/10 bg-background p-6">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -2179,8 +2041,9 @@ export default function InterviewClient() {
               ) : null}
             </div>
           </section>
-        ) : (
-          <section className="grid gap-6 md:grid-cols-2">
+            )}
+            typing={(
+              <section className="grid gap-6 md:grid-cols-2">
             <div className="rounded-3xl border border-foreground/10 bg-background p-6">
               <h1 className="text-xl font-semibold tracking-tight">Setup</h1>
 
@@ -2459,6 +2322,8 @@ export default function InterviewClient() {
               </div>
             </div>
           </section>
+            )}
+          />
         )}
       </main>
     </div>
