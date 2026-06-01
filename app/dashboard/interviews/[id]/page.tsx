@@ -76,8 +76,8 @@ export default async function InterviewDetailsPage(props: {
     return (
       <div className="min-h-dvh bg-background text-foreground">
         <main className="mx-auto w-full max-w-4xl px-6 py-10">
-          <a href="/dashboard" className="text-sm underline underline-offset-4">
-            Back to dashboard
+          <a href="/history" className="text-sm underline underline-offset-4">
+            Back to history
           </a>
           <div className="mt-6 rounded-3xl border border-foreground/10 p-6 text-sm text-foreground/70">
             Invalid interview id.
@@ -92,8 +92,8 @@ export default async function InterviewDetailsPage(props: {
     return (
       <div className="min-h-dvh bg-background text-foreground">
         <main className="mx-auto w-full max-w-4xl px-6 py-10">
-          <a href="/dashboard" className="text-sm underline underline-offset-4">
-            Back to dashboard
+          <a href="/history" className="text-sm underline underline-offset-4">
+            Back to history
           </a>
           <div className="mt-6 rounded-3xl border border-foreground/10 p-6 text-sm text-foreground/70">
             Database is not configured.
@@ -129,8 +129,8 @@ export default async function InterviewDetailsPage(props: {
     return (
       <div className="min-h-dvh bg-background text-foreground">
         <main className="mx-auto w-full max-w-4xl px-6 py-10">
-          <a href="/dashboard" className="text-sm underline underline-offset-4">
-            Back to dashboard
+          <a href="/history" className="text-sm underline underline-offset-4">
+            Back to history
           </a>
           <div className="mt-6 rounded-3xl border border-foreground/10 p-6 text-sm text-foreground/70">
             Interview not found.
@@ -168,9 +168,9 @@ export default async function InterviewDetailsPage(props: {
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <header className="mx-auto flex w-full max-w-4xl items-center justify-between px-6 py-6">
-        <a href="/dashboard" className="text-sm underline underline-offset-4">
-          Back to dashboard
+        <header className="mx-auto flex w-full max-w-4xl items-center justify-between px-6 py-6">
+        <a href="/history" className="text-sm underline underline-offset-4">
+          Back to history
         </a>
         <a
           href="/interview/setup"

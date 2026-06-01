@@ -14,14 +14,16 @@ export async function POST(request: Request) {
   if (!rl.ok) return rateLimitResponse(rl.resetAt);
 
   const body = (await request.json().catch(() => null)) as
-    | { name?: string; email?: string; password?: string }
+    | { name?: string; email?: string; password?: string; dob?: string; phone?: string }
     | null;
 
   const name = body?.name?.trim() || "";
   const email = body?.email?.trim().toLowerCase() || "";
   const password = body?.password || "";
+  const dob = body?.dob?.trim() || "";
+  const phone = body?.phone?.trim() || "";
 
-  if (!name || !email || !password) {
+  if (!name || !email || !password || !dob) {
     return Response.json(
       { ok: false, error: "Missing name, email, or password." },
       { status: 400 },
@@ -41,6 +43,24 @@ export async function POST(request: Request) {
       { ok: false, error: "Password must be at least 8 characters." },
       { status: 400 },
     );
+  }
+
+  // Validate DOB (expecting YYYY-MM-DD)
+  const dobDate = new Date(dob);
+  if (Number.isNaN(dobDate.getTime())) {
+    return Response.json({ ok: false, error: "Invalid date of birth." }, { status: 400 });
+  }
+
+  // Compute age
+  const now = new Date();
+  let age = now.getFullYear() - dobDate.getFullYear();
+  const m = now.getMonth() - dobDate.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < dobDate.getDate())) {
+    age -= 1;
+  }
+
+  if (age <= 15) {
+    return Response.json({ ok: false, error: "You must be at least 16 years old to create an account." }, { status: 403 });
   }
 
   const db = await getDb();
@@ -64,11 +84,17 @@ export async function POST(request: Request) {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
+  const nowDate = new Date();
   const result = await db.collection("users").insertOne({
     name,
     email,
     passwordHash,
-    createdAt: new Date(),
+    dob: dobDate.toISOString(),
+    age,
+    phone: phone || null,
+    phoneVerified: false,
+    emailVerified: false,
+    createdAt: nowDate,
   });
 
   const user = { id: String(result.insertedId), name, email };

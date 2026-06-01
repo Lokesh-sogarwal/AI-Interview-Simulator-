@@ -4,7 +4,7 @@ Source: /Users/lokesh/Downloads/AI_Mock_Interview_Simulator_Roadmap.pdf
 
 AI Mock Interview Simulator - Complete Roadmap
 Project Overview
-• Build an AI-powered mock interview platform using Next.js and OpenAI API.
+• Build an AI-powered mock interview platform using Next.js and Hugging Face API.
 • Features include resume-based questions, AI evaluation, voice analysis, and performance
 dashboard.
 • Target: Placement-ready, scalable full-stack AI project.

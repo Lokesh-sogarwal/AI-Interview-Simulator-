@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import PageHeader from "../../components/PageHeader";
 
 import type { Difficulty, InterviewType } from "@/lib/prompts";
 
@@ -35,7 +36,7 @@ function safeParseDetails(value: string | null): InterviewDetails | null {
     const parsed = JSON.parse(value) as Partial<InterviewDetails>;
     if (!parsed || typeof parsed !== "object") return null;
 
-    const type = parsed.type === "Technical" ? "Technical" : "HR";
+    const type = parsed.type === "Technical" || parsed.type === "Mixed" ? parsed.type : "HR";
     const difficulty =
       parsed.difficulty === "Easy" || parsed.difficulty === "Hard" || parsed.difficulty === "Adaptive"
         ? parsed.difficulty
@@ -59,7 +60,7 @@ function safeParseDetails(value: string | null): InterviewDetails | null {
 }
 
 export default function InterviewSetupClient() {
-  const [type, setType] = useState<InterviewType>("HR");
+  const [type, setType] = useState<InterviewType>("Mixed");
   const [role, setRole] = useState("Software Engineer");
   const [experience, setExperience] = useState("0-2 years");
   const [difficulty, setDifficulty] = useState<Difficulty>("Medium");
@@ -358,9 +359,9 @@ export default function InterviewSetupClient() {
         return;
       }
 
-      setMessage("Interview scheduled successfully. Redirecting to dashboard…");
+      setMessage("Interview scheduled successfully. Redirecting to history…");
       window.setTimeout(() => {
-        window.location.href = "/dashboard";
+        window.location.href = "/history";
       }, 900);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Something went wrong. Please try again.";
@@ -391,163 +392,301 @@ export default function InterviewSetupClient() {
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <header className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-6">
-        <div className="leading-tight">
-          <div className="text-base font-semibold tracking-tight">Interview Setup</div>
-          <div className="text-xs text-foreground/70">Enter details and start</div>
-        </div>
+      {/* Header with Profile Dropdown */}
+      <PageHeader 
+        title="Interview Setup" 
+        subtitle="Configure your interview details"
+        showProfile={true}
+      />
 
-        <a
-          href="/"
-          className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
-        >
-          Home
-        </a>
-      </header>
-
-      <main className="mx-auto w-full max-w-3xl px-6 pb-16">
-        <form onSubmit={onSubmit} className="grid gap-6 rounded-3xl border border-foreground/10 bg-background p-6 md:p-8">
-          <div className="grid gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">Interview details</h1>
-            <p className="text-sm leading-6 text-foreground/70">
-              These inputs are used to generate questions (and tailor them using resume skills when provided).
+      <main className="mx-auto w-full max-w-5xl px-6 py-8 pb-16">
+        <form onSubmit={onSubmit} className="space-y-6">
+          {/* Title Section */}
+          <div>
+            <h2 className="text-2xl font-bold text-foreground">Configure Your Interview</h2>
+            <p className="mt-1 text-sm text-foreground/70">
+              Set your preferences and let us tailor the experience to your needs
             </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="grid gap-2 md:col-span-2">
-              <span className="text-sm font-medium">Practice mode</span>
-              <div className="flex flex-col gap-2 rounded-2xl border border-foreground/15 bg-background p-4 sm:flex-row sm:items-center sm:gap-6">
-                <label className="inline-flex items-center gap-2">
+          {/* Practice Mode Card */}
+          <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6">
+            <div className="mb-4">
+              <h3 className="font-semibold text-foreground">🎯 Practice Mode</h3>
+              <p className="mt-1 text-sm text-foreground/70">Choose how you want to practice</p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className={`rounded-lg border-2 p-4 cursor-pointer transition-all ${
+                interactionMode === "typing"
+                  ? "border-blue-500 bg-blue-500/5"
+                  : "border-foreground/10 hover:border-foreground/20"
+              }`}>
+                <div className="flex items-start gap-3">
                   <input
                     type="radio"
                     name="interactionMode"
                     value="typing"
                     checked={interactionMode === "typing"}
                     onChange={() => setInteractionMode("typing")}
+                    className="mt-1"
                   />
-                  <span className="text-sm">Typing practice</span>
-                </label>
-                <label className="inline-flex items-center gap-2">
+                  <div className="flex-1">
+                    <div className="font-medium text-foreground">⌨️ Typing Practice</div>
+                    <p className="mt-1 text-xs text-foreground/70">Type answers and submit like a standard practice interview</p>
+                  </div>
+                </div>
+              </label>
+
+              <label className={`rounded-lg border-2 p-4 cursor-pointer transition-all ${
+                interactionMode === "video"
+                  ? "border-blue-500 bg-blue-500/5"
+                  : "border-foreground/10 hover:border-foreground/20"
+              }`}>
+                <div className="flex items-start gap-3">
                   <input
                     type="radio"
                     name="interactionMode"
                     value="video"
                     checked={interactionMode === "video"}
                     onChange={() => setInteractionMode("video")}
+                    className="mt-1"
                   />
-                  <span className="text-sm">Video call (voice)</span>
-                </label>
-
-                <div className="text-sm text-foreground/70 sm:ml-auto">
-                  {interactionMode === "video"
-                    ? "Uses your webcam + microphone and reads questions aloud."
-                    : "Type answers and submit like a standard practice interview."}
+                  <div className="flex-1">
+                    <div className="font-medium text-foreground">📹 Video Call</div>
+                    <p className="mt-1 text-xs text-foreground/70">Uses your webcam and microphone with questions read aloud</p>
+                  </div>
                 </div>
-              </div>
+              </label>
             </div>
-
-            <label className="grid gap-2">
-              <span className="text-sm font-medium">Interview type</span>
-              <select
-                value={type}
-                onChange={(e) => setType(e.target.value as InterviewType)}
-                className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
-              >
-                <option value="HR">HR</option>
-                <option value="Technical">Technical</option>
-              </select>
-            </label>
-
-            <label className="grid gap-2">
-              <span className="text-sm font-medium">Difficulty</span>
-              <select
-                value={difficulty}
-                onChange={(e) => setDifficulty(e.target.value as Difficulty)}
-                className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
-              >
-                <option value="Adaptive">Adaptive</option>
-                <option value="Easy">Easy</option>
-                <option value="Medium">Medium</option>
-                <option value="Hard">Hard</option>
-              </select>
-            </label>
-
-            <label className="grid gap-2 md:col-span-2">
-              <span className="text-sm font-medium">Role</span>
-              <input
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                placeholder="e.g., Software Engineer"
-                className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
-              />
-            </label>
-
-            <label className="grid gap-2">
-              <span className="text-sm font-medium">Experience</span>
-              <select
-                value={experience}
-                onChange={(e) => setExperience(e.target.value)}
-                className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
-              >
-                <option value="0-2 years">0-2 years</option>
-                <option value="2-5 years">2-5 years</option>
-                <option value="5-8 years">5-8 years</option>
-                <option value="8+ years">8+ years</option>
-              </select>
-            </label>
-
-            <label className="grid gap-2">
-              <span className="text-sm font-medium">Company (optional)</span>
-              <input
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                placeholder="e.g., Google"
-                className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
-              />
-            </label>
-
-            <label className="grid gap-2 md:col-span-2">
-              <span className="text-sm font-medium">Focus areas (optional)</span>
-              <textarea
-                value={focusAreas}
-                onChange={(e) => setFocusAreas(e.target.value)}
-                placeholder="e.g., leadership, stakeholder management, system design, React"
-                className="min-h-24 rounded-2xl border border-foreground/15 bg-background px-4 py-3 text-sm"
-              />
-            </label>
           </div>
 
-          <div className="grid gap-3 rounded-2xl border border-foreground/10 p-4">
-            <div className="text-sm font-medium">Start</div>
-            <div className="text-sm text-foreground/70">Start now, or schedule it and begin from the dashboard.</div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-6">
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="startMode"
-                  value="now"
-                  checked={startMode === "now"}
-                  onChange={() => setStartMode("now")}
-                />
-                <span className="text-sm">Start now</span>
+          {/* Interview Details Grid */}
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Interview Type */}
+            <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6">
+              <label className="block">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-lg">🎤</span>
+                  <span className="text-sm font-semibold text-foreground">Interview Type</span>
+                </div>
+                <select
+                  value={type}
+                  onChange={(e) => setType(e.target.value as InterviewType)}
+                  className="w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm font-medium transition-all hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="HR">HR Interview</option>
+                  <option value="Technical">Technical Interview</option>
+                </select>
               </label>
-              <label className="inline-flex items-center gap-2">
+            </div>
+
+            {/* Difficulty */}
+            <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6">
+              <label className="block">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-lg">📊</span>
+                  <span className="text-sm font-semibold text-foreground">Difficulty</span>
+                </div>
+                <select
+                  value={difficulty}
+                  onChange={(e) => setDifficulty(e.target.value as Difficulty)}
+                  className="w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm font-medium transition-all hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="Adaptive">Adaptive</option>
+                  <option value="Easy">Easy</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Hard">Hard</option>
+                </select>
+              </label>
+            </div>
+
+            {/* Role */}
+            <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6 md:col-span-2">
+              <label className="block">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-lg">💼</span>
+                  <span className="text-sm font-semibold text-foreground">Target Role</span>
+                </div>
                 <input
-                  type="radio"
-                  name="startMode"
-                  value="schedule"
-                  checked={startMode === "schedule"}
-                  onChange={() => setStartMode("schedule")}
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  placeholder="e.g., Senior Software Engineer, Product Manager"
+                  className="w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm transition-all placeholder:text-foreground/50 hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
                 />
-                <span className="text-sm">Schedule interview</span>
+              </label>
+            </div>
+
+            {/* Experience */}
+            <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6">
+              <label className="block">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-lg">⏱️</span>
+                  <span className="text-sm font-semibold text-foreground">Experience Level</span>
+                </div>
+                <select
+                  value={experience}
+                  onChange={(e) => setExperience(e.target.value)}
+                  className="w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm font-medium transition-all hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="0-2 years">0-2 years</option>
+                  <option value="2-5 years">2-5 years</option>
+                  <option value="5-8 years">5-8 years</option>
+                  <option value="8+ years">8+ years</option>
+                </select>
+              </label>
+            </div>
+
+            {/* Company */}
+            <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6">
+              <label className="block">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-lg">🏢</span>
+                  <span className="text-sm font-semibold text-foreground">Company (Optional)</span>
+                </div>
+                <input
+                  value={company}
+                  onChange={(e) => setCompany(e.target.value)}
+                  placeholder="e.g., Google, Meta, Amazon"
+                  className="w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm transition-all placeholder:text-foreground/50 hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+            </div>
+
+            {/* Focus Areas */}
+            <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6 md:col-span-2">
+              <label className="block">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-lg">🎯</span>
+                  <span className="text-sm font-semibold text-foreground">Focus Areas (Optional)</span>
+                </div>
+                <textarea
+                  value={focusAreas}
+                  onChange={(e) => setFocusAreas(e.target.value)}
+                  placeholder="e.g., leadership, system design, React, API design, project management"
+                  className="w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm transition-all placeholder:text-foreground/50 hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
+                  rows={3}
+                />
+              </label>
+              <p className="mt-2 text-xs text-foreground/60">Separate topics with commas for tailored questions</p>
+            </div>
+          </div>
+
+          {/* Resume Section */}
+          <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6">
+            <div className="mb-4">
+              <h3 className="font-semibold text-foreground">📄 Resume</h3>
+              <p className="mt-1 text-sm text-foreground/70">Upload to personalize questions based on your experience</p>
+            </div>
+
+            <div className="mb-4 grid gap-3 sm:grid-cols-2">
+              <label className={`rounded-lg border-2 p-4 cursor-pointer transition-all ${
+                resumeMode === "upload"
+                  ? "border-blue-500 bg-blue-500/5"
+                  : "border-foreground/10 hover:border-foreground/20"
+              }`}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="resumeMode"
+                    value="upload"
+                    checked={resumeMode === "upload"}
+                    onChange={() => setResumeMode("upload")}
+                  />
+                  <div className="font-medium text-foreground">Upload Resume</div>
+                </div>
               </label>
 
-              {startMode === "schedule" ? (
-                <div className="grid gap-2 sm:ml-auto sm:grid-cols-2">
-                  <label className="grid gap-1">
-                    <span className="sr-only">Scheduled date</span>
+              <label className={`rounded-lg border-2 p-4 cursor-pointer transition-all ${
+                resumeMode === "default"
+                  ? "border-blue-500 bg-blue-500/5"
+                  : "border-foreground/10 hover:border-foreground/20"
+              }`}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="resumeMode"
+                    value="default"
+                    checked={resumeMode === "default"}
+                    onChange={() => setResumeMode("default")}
+                  />
+                  <div className="font-medium text-foreground">Skip Resume</div>
+                </div>
+              </label>
+            </div>
+
+            {resumeMode === "upload" && (
+              <label className="block cursor-pointer rounded-lg border-2 border-dashed border-foreground/25 p-6 transition-all hover:border-foreground/40 hover:bg-foreground/5">
+                <input
+                  type="file"
+                  className="sr-only"
+                  accept={accept}
+                  onChange={(e) => {
+                    setResumeFile(e.target.files?.[0] ?? null);
+                    setMessage("");
+                    setStatus("idle");
+                  }}
+                />
+
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <div className="text-2xl">📁</div>
+                  <div className="text-sm font-medium text-foreground">
+                    {resumeFile ? resumeFile.name : "Click to upload resume"}
+                  </div>
+                  <div className="text-xs text-foreground/60">PDF, DOC, or DOCX • Max 10MB</div>
+                </div>
+              </label>
+            )}
+          </div>
+
+          {/* Start Options */}
+          <div className="rounded-xl border border-foreground/10 bg-foreground/[0.02] p-6">
+            <div className="mb-4">
+              <h3 className="font-semibold text-foreground">⏰ When to Start</h3>
+              <p className="mt-1 text-sm text-foreground/70">Start immediately or schedule for later</p>
+            </div>
+
+            <div className="mb-4 grid gap-3 sm:grid-cols-2">
+              <label className={`rounded-lg border-2 p-4 cursor-pointer transition-all ${
+                startMode === "now"
+                  ? "border-blue-500 bg-blue-500/5"
+                  : "border-foreground/10 hover:border-foreground/20"
+              }`}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="startMode"
+                    value="now"
+                    checked={startMode === "now"}
+                    onChange={() => setStartMode("now")}
+                  />
+                  <div className="font-medium text-foreground">Start Now</div>
+                </div>
+              </label>
+
+              <label className={`rounded-lg border-2 p-4 cursor-pointer transition-all ${
+                startMode === "schedule"
+                  ? "border-blue-500 bg-blue-500/5"
+                  : "border-foreground/10 hover:border-foreground/20"
+              }`}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="startMode"
+                    value="schedule"
+                    checked={startMode === "schedule"}
+                    onChange={() => setStartMode("schedule")}
+                  />
+                  <div className="font-medium text-foreground">Schedule</div>
+                </div>
+              </label>
+            </div>
+
+            {startMode === "schedule" && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block">
+                    <span className="text-xs font-semibold text-foreground/70">Date</span>
                     <input
                       type="date"
                       value={scheduledDate}
@@ -557,12 +696,14 @@ export default function InterviewSetupClient() {
                         setMessage("");
                         setStatus("idle");
                       }}
-                      className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
+                      className="mt-2 w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm transition-all hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
                       required
                     />
                   </label>
-                  <label className="grid gap-1">
-                    <span className="sr-only">Scheduled time</span>
+                </div>
+                <div>
+                  <label className="block">
+                    <span className="text-xs font-semibold text-foreground/70">Time</span>
                     <select
                       value={scheduledTime}
                       onChange={(e) => {
@@ -570,7 +711,7 @@ export default function InterviewSetupClient() {
                         setMessage("");
                         setStatus("idle");
                       }}
-                      className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm"
+                      className="mt-2 w-full rounded-lg border border-foreground/15 bg-background px-4 py-3 text-sm transition-all hover:border-foreground/25 focus:border-blue-500 focus:outline-none"
                       required
                       disabled={!scheduledDate || availableTimeSlots.length === 0}
                     >
@@ -591,88 +732,44 @@ export default function InterviewSetupClient() {
                     </select>
                   </label>
                 </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="grid gap-3 rounded-2xl border border-foreground/10 p-4">
-            <div className="text-sm font-medium">Resume</div>
-            <div className="text-sm text-foreground/70">
-              Choose Upload for resume-based questions, or Default to start without a resume.
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="resumeMode"
-                  value="upload"
-                  checked={resumeMode === "upload"}
-                  onChange={() => setResumeMode("upload")}
-                />
-                <span className="text-sm">Upload resume</span>
-              </label>
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="resumeMode"
-                  value="default"
-                  checked={resumeMode === "default"}
-                  onChange={() => setResumeMode("default")}
-                />
-                <span className="text-sm">Default (no resume)</span>
-              </label>
-            </div>
-
-            <label className="block cursor-pointer rounded-2xl border border-dashed border-foreground/25 p-4 transition-opacity hover:opacity-95">
-              <input
-                type="file"
-                className="sr-only"
-                accept={accept}
-                disabled={resumeMode !== "upload"}
-                onChange={(e) => {
-                  setResumeFile(e.target.files?.[0] ?? null);
-                  setMessage("");
-                  setStatus("idle");
-                }}
-              />
-
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-medium">Choose a file</div>
-                  <div className="text-sm text-foreground/70">
-                    {resumeMode !== "upload"
-                      ? "Disabled (default mode)"
-                      : resumeFile
-                        ? resumeFile.name
-                        : "PDF, DOC, or DOCX"}
-                  </div>
-                </div>
-                <div className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium">
-                  Browse
-                </div>
               </div>
-            </label>
+            )}
           </div>
 
-          <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+          {/* Submit Button and Message */}
+          <div className="flex flex-col gap-4">
             <button
               type="submit"
               disabled={status === "submitting"}
-              className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-6 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+              className="inline-flex h-12 items-center justify-center rounded-lg bg-blue-600 px-8 font-semibold text-white transition-all enabled:hover:bg-blue-700 disabled:opacity-70"
             >
               {status === "submitting"
                 ? startMode === "schedule"
-                  ? "Scheduling…"
-                  : "Starting…"
+                  ? "⏳ Scheduling…"
+                  : "▶ Starting…"
                 : startMode === "schedule"
-                  ? "Schedule interview"
-                  : "Start interview"}
+                  ? "📅 Schedule Interview"
+                  : "▶ Start Interview"}
             </button>
 
-            <div className={status === "error" ? "text-sm text-foreground" : "text-sm text-foreground/70"} aria-live="polite">
-              {message || "You can change these later during the interview."}
-            </div>
+            {message && (
+              <div
+                className={`rounded-lg px-4 py-3 text-sm font-medium ${
+                  status === "error"
+                    ? "border border-red-500/30 bg-red-500/10 text-red-700"
+                    : "border border-blue-500/30 bg-blue-500/10 text-blue-700"
+                }`}
+                role="alert"
+              >
+                {message}
+              </div>
+            )}
+
+            {!message && status === "idle" && (
+              <div className="text-xs text-foreground/60">
+                ✓ All settings can be adjusted before the interview starts
+              </div>
+            )}
           </div>
         </form>
       </main>

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import PerformanceDashboard from "@/app/components/PerformanceDashboard";
 import type { Evaluation } from "@/app/api/ai/evaluate/route";
 
 type Turn = {
@@ -19,21 +20,80 @@ function avg(nums: number[]) {
 
 export default function FeedbackClient() {
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [sessionTurns, setSessionTurns] = useState<Turn[]>([]);
+  const [dataSource, setDataSource] = useState<"db" | "local" | "none">("none");
+  const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle",
   );
   const [message, setMessage] = useState<string>("");
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  useEffect(() => {
+  const loadFeedbackData = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+
     const raw = window.localStorage.getItem("aisim_turns");
-    if (!raw) return;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as Turn[];
+        setSessionTurns(parsed);
+      } catch {
+        setSessionTurns([]);
+      }
+    }
 
     try {
-      const parsed = JSON.parse(raw) as Turn[];
-      setTurns(parsed);
+      const response = await fetch("/api/interviews", { credentials: "include" });
+      const payload = (await response.json().catch(() => null)) as
+        | { ok: true; interviews?: Array<{ transcript?: Turn[] }> }
+        | { ok: false; error?: string }
+        | null;
+
+      if (response.ok && payload && payload.ok === true) {
+        const latestInterview = payload.interviews?.[0];
+        const savedTurns = Array.isArray(latestInterview?.transcript)
+          ? latestInterview.transcript
+          : [];
+
+        if (savedTurns.length > 0) {
+          setTurns(savedTurns);
+          setDataSource("db");
+          setLoading(false);
+          return;
+        }
+      }
     } catch {
-      setTurns([]);
+      // fall back below
     }
+
+    if (sessionTurns.length > 0) {
+      setTurns(sessionTurns);
+      setDataSource("local");
+    } else {
+      setTurns([]);
+      setDataSource("none");
+    }
+
+    setLoading(false);
+  };
+
+  // Initial load on mount and when refreshKey changes
+  useEffect(() => {
+    loadFeedbackData(true);
+  }, [refreshKey]);
+
+  // Re-fetch when page becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        loadFeedbackData(false);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
   const summary = useMemo(() => {
@@ -61,6 +121,12 @@ export default function FeedbackClient() {
   }, [turns]);
 
   async function saveToDashboard() {
+    if (sessionTurns.length === 0) {
+      setStatus("error");
+      setMessage("No current session data to save.");
+      return;
+    }
+
     setStatus("saving");
     setMessage("Saving to dashboard…");
 
@@ -80,7 +146,7 @@ export default function FeedbackClient() {
             confidence: summary.confidence,
             depth: summary.depth,
           },
-          transcript: turns.map((t) => ({
+          transcript: sessionTurns.map((t) => ({
             question: t.question,
             answer: t.answer,
             evaluation: t.evaluation,
@@ -112,9 +178,10 @@ export default function FeedbackClient() {
       }
 
       setStatus("saved");
-      setMessage("Saved. Opening dashboard…");
+      setMessage("Saved. Refreshing data…");
       window.localStorage.removeItem("aisim_turns");
-      window.location.href = "/dashboard";
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      setRefreshKey((prev) => prev + 1);
     } catch {
       setStatus("error");
       setMessage("Could not save. Check your connection.");
@@ -123,88 +190,33 @@ export default function FeedbackClient() {
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
-        <a href="/" className="flex items-center gap-3">
-          <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-background">
-            <span className="text-sm font-semibold">AI</span>
-          </div>
-          <div className="leading-tight">
-            <div className="text-base font-semibold tracking-tight">Interview Simulator</div>
-            <div className="text-xs text-foreground/70">Feedback</div>
-          </div>
-        </a>
-
-        <a
-          href="/dashboard"
-          className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
-        >
-          Dashboard
-        </a>
-      </header>
-
       <main className="mx-auto w-full max-w-6xl px-6 pb-14">
-        <div className="flex flex-col gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">Your feedback</h1>
-          <p className="text-sm text-foreground/70">Summary scores and key improvements from this session.</p>
+        <div className="flex flex-col gap-2 justify-between sm:flex-row sm:items-start">
+          <div className="flex flex-col gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">Your feedback</h1>
+            <p className="text-sm text-foreground/70">Summary scores and key improvements from this session.</p>
+          </div>
+          <button
+            onClick={() => setRefreshKey((prev) => prev + 1)}
+            disabled={loading}
+            className="mt-2 sm:mt-0 inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+          >
+            {loading ? "Loading…" : "Refresh"}
+          </button>
         </div>
 
-        {turns.length === 0 ? (
-          <div className="mt-6 rounded-3xl border border-foreground/10 p-6 text-sm text-foreground/70">
-            No interview data found. Start an interview first.
-          </div>
-        ) : (
-          <>
-            <section className="mt-6 grid gap-4 md:grid-cols-5">
-              {(
-                [
-                  ["Overall", summary.overall],
-                  ["Technical", summary.technical],
-                  ["Clarity", summary.clarity],
-                  ["Confidence", summary.confidence],
-                  ["Depth", summary.depth],
-                ] as const
-              ).map(([label, value]) => (
-                <div key={label} className="rounded-3xl border border-foreground/10 bg-background p-5">
-                  <div className="text-xs font-medium text-foreground/60">{label}</div>
-                  <div className="mt-2 text-2xl font-semibold">{value}/10</div>
-                </div>
-              ))}
-            </section>
-
-            <section className="mt-6 rounded-3xl border border-foreground/10 bg-background p-6">
-              <h2 className="text-lg font-semibold tracking-tight">Key improvements</h2>
-              <div className="mt-3 grid gap-3">
-                {topImprovements.map((t, idx) => (
-                  <div key={idx} className="rounded-2xl border border-foreground/10 p-4 text-sm text-foreground/80">
-                    {t}
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={saveToDashboard}
-                  disabled={status === "saving" || status === "saved"}
-                  className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                >
-                  {status === "saved" ? "Saved" : status === "saving" ? "Saving…" : "Save to dashboard"}
-                </button>
-                <a
-                  href="/interview/setup"
-                  className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
-                >
-                  Start another interview
-                </a>
-              </div>
-
-              <div className="mt-3 text-sm text-foreground/70" aria-live="polite">
-                {message}
-              </div>
-            </section>
-          </>
-        )}
-      </main>
+        {/* Performance Dashboard - Historical Performance */}
+        <section className="mt-8 rounded-3xl border border-foreground/10 bg-background p-6">
+          <h2 className="text-lg font-semibold tracking-tight mb-4">Overall Performance</h2>
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-foreground/70">Loading performance data...</div>
+            </div>
+          ) : (
+            <PerformanceDashboard key={refreshKey} />
+          )}
+        </section>
+       </main>
     </div>
   );
 }

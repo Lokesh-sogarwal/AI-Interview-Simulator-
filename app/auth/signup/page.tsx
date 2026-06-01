@@ -1,11 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
+import { initFirebaseClient } from "@/lib/firebaseClient";
+// dynamic-import `firebase/auth` at runtime to avoid build-time type errors
 
 export default function SignupPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [dob, setDob] = useState("");
+  const [phone, setPhone] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
     "idle",
   );
@@ -14,7 +19,7 @@ export default function SignupPage() {
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!name || !email || !password) {
+    if (!name || !email || !password || !dob) {
       setStatus("error");
       setMessage("Please fill in your name, email, and password.");
       return;
@@ -24,33 +29,66 @@ export default function SignupPage() {
     setMessage("Creating your account…");
 
     try {
-      const response = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
-      });
+      const auth = await initFirebaseClient();
+      // @ts-ignore - dynamic import; types may be missing in the build environment
+      const firebaseAuth = await import("firebase/auth");
+      const { createUserWithEmailAndPassword, sendEmailVerification, signInWithPhoneNumber, RecaptchaVerifier } = firebaseAuth;
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      const user = cred.user;
+      await sendEmailVerification(user);
 
-      const payload = (await response.json().catch(() => null)) as
-        | { ok: true; user: { id: string; name: string; email: string } }
-        | { ok: false; error: string }
-        | null;
-
-      if (!response.ok || !payload || payload.ok === false) {
-        setStatus("error");
-        setMessage(
-          payload && "error" in payload && payload.error
-            ? payload.error
-            : "Could not create account. Please try again.",
-        );
-        return;
+      // If phone provided, prompt for verification
+      if (phone) {
+        // render invisible recaptcha
+        if (!(window as any).recaptchaVerifier) {
+          (window as any).recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', { size: 'invisible' }, auth);
+        }
+        const confirmation: any = await signInWithPhoneNumber(auth, phone, (window as any).recaptchaVerifier);
+        const code = window.prompt('Enter the SMS verification code');
+        if (code) {
+          await confirmation.confirm(code);
+        }
       }
 
-      setStatus("success");
-      setMessage("Account created. Redirecting…");
-      window.location.href = "/";
-    } catch {
-      setStatus("error");
-      setMessage("Could not create account. Please try again.");
+      setStatus('success');
+      setMessage('Account created. Check your email to verify, then click Complete signup.');
+    } catch (err: any) {
+      setStatus('error');
+      setMessage(err?.message || 'Could not create account. Please try again.');
+    }
+  }
+
+  async function completeSignup() {
+    try {
+      setStatus('loading');
+      setMessage('Finalizing signup…');
+      const auth = await initFirebaseClient();
+      const user = auth.currentUser;
+      if (!user) {
+        setStatus('error');
+        setMessage('No authenticated Firebase user found.');
+        return;
+      }
+      await user.reload();
+      if (!user.emailVerified) {
+        setStatus('error');
+        setMessage('Please verify your email first (check your inbox).');
+        return;
+      }
+      const idToken = await user.getIdToken();
+      const resp = await fetch('/api/auth/signup-firebase', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken, dob }) });
+      const payload = await resp.json().catch(() => null);
+      if (!resp.ok || !payload || payload.ok === false) {
+        setStatus('error');
+        setMessage((payload && payload.error) || 'Signup finalization failed.');
+        return;
+      }
+      setStatus('success');
+      setMessage('Signup complete. Redirecting…');
+      window.location.href = '/';
+    } catch (e: any) {
+      setStatus('error');
+      setMessage(e?.message || 'Signup finalization failed.');
     }
   }
 
@@ -89,6 +127,29 @@ export default function SignupPage() {
         </label>
 
         <label className="grid gap-2">
+          <span className="text-sm font-medium">Date of birth</span>
+          <input
+            value={dob}
+            onChange={(e) => setDob(e.target.value)}
+            type="date"
+            className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
+            placeholder="YYYY-MM-DD"
+          />
+        </label>
+
+        <label className="grid gap-2">
+          <span className="text-sm font-medium">Phone (optional)</span>
+          <input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            type="tel"
+            autoComplete="tel"
+            className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
+            placeholder="+1234567890"
+          />
+        </label>
+
+        <label className="grid gap-2">
           <span className="text-sm font-medium">Password</span>
           <input
             value={password}
@@ -100,13 +161,23 @@ export default function SignupPage() {
           />
         </label>
 
-        <button
-          type="submit"
-          disabled={status === "loading"}
-          className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-        >
-          {status === "loading" ? "Creating…" : "Create account"}
-        </button>
+        <div id="recaptcha-container" />
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={status === "loading"}
+            className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+          >
+            {status === "loading" ? "Creating…" : "Create account"}
+          </button>
+          <button
+            type="button"
+            onClick={completeSignup}
+            className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium"
+          >
+            Complete signup
+          </button>
+        </div>
 
         <div
           className={

@@ -1,0 +1,132 @@
+Software Requirements Specification (SRS)
+AI Interview Simulator
+
+1. Introduction
+The AI Interview Simulator is a web platform that helps users upload a resume, review AI feedback, save the resume in a database, and practice personalized interview sessions. The system is designed to reduce the time spent preparing for interviews and to give users structured feedback on their resume and interview performance.
+
+2. Purpose
+The purpose of this project is to provide an interactive platform for resume improvement and interview practice. Users should be able to upload a resume, see suggestions, make changes, save the final version, and reuse that same resume when starting an interview session later.
+
+3. Scope
+The system includes:
+- User authentication
+- Resume upload and text extraction
+- Resume preview and editing
+- ATS score generation and suggestions
+- Resume save/load functionality
+- Personalized interview setup using the saved resume
+- Interview feedback and dashboard history
+- AI-assisted interview question generation and scoring
+
+4. Users
+- Job seekers
+- Students
+- Early-career professionals
+- Anyone preparing for interviews
+
+5. Detailed Functional Requirements
+
+5.1 Authentication
+- Users can sign up, sign in, and sign out.
+- The app uses secure cookie-based sessions.
+- Only authenticated users can access their saved resume and history.
+
+5.2 Resume Upload
+- Users can upload PDF, DOC, and DOCX resumes.
+- The system extracts text from uploaded files.
+- Users can also paste resume text manually.
+- The system should preserve enough content for analysis and preview.
+
+5.3 Resume Preview
+- Users can preview the uploaded or entered resume.
+- The preview is available before saving.
+- The preview should help the user confirm that the right file or text was captured.
+
+5.4 ATS Analysis
+- The system generates an ATS-style score.
+- The system provides improvement suggestions.
+- Users can edit suggestions before saving.
+- The analysis should highlight missing keywords and weak sections.
+
+5.5 Resume Persistence
+- The system saves resume data in MongoDB.
+- The system can fetch the saved resume later.
+- The database should store the text, score, and suggestion metadata.
+
+5.6 Interview Flow
+- The system uses the saved resume when starting an interview.
+- The system generates personalized interview questions.
+- The system stores interview results and feedback.
+- The setup page should automatically prefer the saved resume if available.
+
+5.7 Dashboard
+- Users can view interview history.
+- Users can review feedback and performance summaries.
+- The dashboard should allow users to revisit past attempts.
+
+6. Non-Functional Requirements
+- Performance: Resume analysis should complete in a reasonable time.
+- Security: Authentication tokens and secrets must be protected.
+- Reliability: Saved data should persist correctly.
+- Usability: The interface should be simple and mobile-friendly.
+- Maintainability: The codebase should remain modular and easy to update.
+- Scalability: The app should support additional users and more interview sessions.
+
+7. Technology Stack
+- Frontend: Next.js, React, TypeScript, Tailwind CSS
+- Backend: Next.js API routes
+- Database: MongoDB
+- Authentication: JWT cookies
+- AI Provider: Hugging Face / OpenAI fallback
+- Parsing: PDF and document text extraction libraries
+
+8. External API Endpoints
+- POST /api/resume
+- POST /api/resume/profile
+- POST /api/resume/save
+- GET /api/resume/saved
+
+9. Data Requirements
+The system should store:
+- User information
+- Resume text
+- ATS score
+- Suggestions
+- Saved resume timestamp
+- Interview history
+- Feedback data
+
+10. Use Cases
+
+Use Case 1: Upload Resume
+1. User uploads a resume.
+2. System extracts the text.
+3. System shows preview and analysis options.
+
+Use Case 2: Save Resume
+1. User reviews the ATS score.
+2. User edits the resume or suggestions.
+3. User saves the resume.
+4. System stores it in the database.
+
+Use Case 3: Start Interview
+1. User opens interview setup.
+2. System loads the saved resume.
+3. Interview questions are generated from the resume.
+
+11. Acceptance Criteria
+- Users can upload and preview resumes.
+- Users can get ATS scores and suggestions.
+- Users can save resumes to the database.
+- Interview setup uses the saved resume.
+- Dashboard and feedback pages remain accessible.
+
+12. Future Enhancements
+- Drag-and-drop file upload
+- Better PDF preview rendering
+- More detailed ATS scoring
+- Exportable interview reports
+- More interview templates
+
+13. Conclusion
+The SRS defines the current and expected behavior of the AI Interview Simulator. It provides a base for development, testing, and future improvement of the platform.

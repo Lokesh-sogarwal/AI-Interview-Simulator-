@@ -5,6 +5,7 @@ export type AuthUser = {
   id: string;
   name: string;
   email: string;
+  isAdmin?: boolean;
 };
 
 const COOKIE_NAME = "aisim_token";
@@ -25,6 +26,7 @@ export async function signAuthToken(user: AuthUser) {
     sub: user.id,
     name: user.name,
     email: user.email,
+    isAdmin: user.isAdmin || false,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -42,11 +44,13 @@ export async function verifyAuthToken(token: string) {
 
     const name = typeof payload.name === "string" ? payload.name : "";
     const email = typeof payload.email === "string" ? payload.email : "";
+    const isAdmin = Boolean(payload.isAdmin || false);
 
     return {
       id: payload.sub,
       name,
       email,
+      isAdmin,
     } satisfies AuthUser;
   } catch {
     return null;
