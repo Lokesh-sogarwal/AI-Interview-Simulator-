@@ -8,7 +8,7 @@ export default function InterviewCompletedPage() {
 
   useEffect(() => {
     const id = window.setTimeout(() => {
-      router.push("/dashboard");
+      router.push("/history");
     }, 5000);
     return () => window.clearTimeout(id);
   }, [router]);
@@ -32,7 +32,7 @@ export default function InterviewCompletedPage() {
               <div>
                 <h1 className="text-balance text-2xl font-semibold tracking-tight">Interview complete</h1>
                 <p className="mt-2 text-pretty text-sm leading-6 text-foreground/70">
-                  Your session has been saved. Redirecting to your dashboard in 5 seconds.
+                  Your session has been saved. Redirecting to your history in 5 seconds.
                 </p>
               </div>
 
@@ -41,10 +41,10 @@ export default function InterviewCompletedPage() {
               </div>
 
               <a
-                href="/dashboard"
+                href="/history"
                 className="inline-flex h-11 w-full items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-90"
               >
-                Go to dashboard now
+                Go to history now
               </a>
             </div>
           </div>

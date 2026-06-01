@@ -12,6 +12,7 @@ import { createFaceDetector, type FaceDetectorApi } from "./faceDetector";
 import Loader from "./components/Loader";
 import SetupScreen from "./components/SetupScreen";
 import InterviewScreen from "./components/InterviewScreen";
+import PageHeader from "../components/PageHeader";
 
 type Turn = {
   question: string;
@@ -1750,33 +1751,11 @@ export default function InterviewClient() {
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
-        <a href="/" className="flex items-center gap-3">
-          <div className="flex size-9 items-center justify-center rounded-xl bg-foreground text-background">
-            <span className="text-sm font-semibold">AI</span>
-          </div>
-          <div className="leading-tight">
-            <div className="text-base font-semibold tracking-tight">Interview Simulator</div>
-            <div className="text-xs text-foreground/70">Interview session</div>
-          </div>
-        </a>
-
-        {interactionMode === "typing" || status === "done" ? (
-          <a
-            href="/feedback"
-            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
-          >
-            View feedback
-          </a>
-        ) : (
-          <a
-            href="/dashboard"
-            className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity hover:opacity-90"
-          >
-            Dashboard
-          </a>
-        )}
-      </header>
+      <PageHeader 
+        title="Live Interview Session"
+        subtitle={role ? `${role} · ${type} · ${difficultySetting === "Adaptive" ? `Adaptive (${difficulty})` : difficulty}` : "Configure and start your interview"}
+        showProfile={true}
+      />
 
       <main className="mx-auto w-full max-w-6xl px-6 pb-14">
         {!interviewStarted && !question.trim() && status !== "done" ? (
@@ -1808,7 +1787,7 @@ export default function InterviewClient() {
             faceDetectionStatus={faceDetectionStatus}
             onStartInterview={() => void onStartInterview()}
             onBack={() => {
-              window.location.href = "/dashboard";
+              window.location.href = "/history";
             }}
             onRequestCamera={() => void requestCameraPermission()}
             onRequestMic={() => void requestMicPermission()}
@@ -2030,7 +2009,7 @@ export default function InterviewClient() {
                     </a>
                     {interviewId ? (
                       <a
-                        href={`/dashboard/interviews/${interviewId}`}
+                        href={`/history/interviews/${interviewId}`}
                         className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-90"
                       >
                         View full report
@@ -2175,10 +2154,10 @@ export default function InterviewClient() {
                 </div>
 
                 <a
-                  href="/dashboard"
+                  href="/history"
                   className="inline-flex h-11 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
                 >
-                  Dashboard
+                  History
                 </a>
 
                 <div className="text-sm text-foreground/70" aria-live="polite">
@@ -2307,7 +2286,7 @@ export default function InterviewClient() {
 
                     {interviewId ? (
                       <a
-                        href={`/dashboard/interviews/${interviewId}`}
+                        href={`/history/interviews/${interviewId}`}
                         className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-90"
                       >
                         View full report

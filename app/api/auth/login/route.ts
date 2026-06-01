@@ -61,11 +61,27 @@ export async function POST(request: Request) {
       { status: 401 },
     );
   }
-
+  // Enforce minimum age if dob/age stored
+  const dobIso = userDoc.dob ? String(userDoc.dob) : null;
+  if (dobIso) {
+    const dobDate = new Date(dobIso);
+    if (!Number.isNaN(dobDate.getTime())) {
+      const now = new Date();
+      let age = now.getFullYear() - dobDate.getFullYear();
+      const m = now.getMonth() - dobDate.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < dobDate.getDate())) {
+        age -= 1;
+      }
+      if (age <= 15) {
+        return Response.json({ ok: false, error: "Accounts must be 16 or older to sign in." }, { status: 403 });
+      }
+    }
+  }
   const user = {
     id: String(userDoc._id),
     name: String(userDoc.name || ""),
     email: String(userDoc.email || ""),
+    isAdmin: Boolean(userDoc.isAdmin || false),
   };
 
   const token = await signAuthToken(user);

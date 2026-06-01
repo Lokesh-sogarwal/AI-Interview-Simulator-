@@ -1,0 +1,136 @@
+AI Interview Simulator - Project Report
+
+1. Executive Summary
+AI Interview Simulator is a browser-based platform that combines resume analysis, interview practice, and feedback into one workflow. Users can upload or paste a resume, preview the content, receive ATS-style suggestions, save the improved resume to a database, and start personalized mock interviews using the saved version.
+
+2. Project Background
+Job preparation usually requires multiple tools: one for resume checking, another for interview practice, and another for storing feedback. This project unifies those tasks. By keeping the resume in the database, the platform reduces repeated uploads and enables more personalized interview questions.
+
+3. Project Objectives
+- Make resume review easy and interactive
+- Provide AI-generated ATS feedback
+- Save resume data for future use
+- Use saved resume data for interview setup
+- Store interview feedback and history
+- Create a modern and user-friendly interface
+
+4. Scope of Work
+Implemented features include:
+- Authentication and protected access
+- Resume upload and extraction
+- Resume preview and edit flow
+- ATS score and suggestion generation
+- Resume save/load from MongoDB
+- Interview setup using saved resume data
+- Dashboard and feedback presentation
+- AI-powered question generation and evaluation
+
+5. Architecture Summary
+The system uses a three-layer architecture:
+
+Presentation Layer:
+- Next.js pages and React components
+- Landing page, home page, modal, interview setup, dashboard
+
+Application Layer:
+- Next.js API routes for upload, analysis, save/load, and interview processing
+
+Data Layer:
+- MongoDB for user data, saved resumes, interviews, and feedback
+
+6. Technology Stack
+- Frontend: Next.js, React, TypeScript, Tailwind CSS
+- Backend: Next.js App Router API routes
+- Database: MongoDB
+- Authentication: JWT cookie sessions
+- AI: Hugging Face / OpenAI fallback
+- Parsing: PDF and document text extraction libraries
+
+7. Functional Delivery Summary
+The main user journey is:
+1. User signs in
+2. User uploads a resume
+3. System extracts resume text
+4. System shows preview and suggestions
+5. User saves the resume
+6. Interview setup loads the saved resume
+7. Interview questions are generated from the resume
+8. User receives feedback and can review past attempts
+
+8. Module-by-Module Breakdown
+
+Authentication Module:
+Handles sign in, sign out, and protected access. It ensures only authenticated users can access saved resume data and interview history.
+
+Resume Upload Module:
+Accepts PDF, DOC, and DOCX files or pasted text. The extracted resume content is prepared for preview and analysis.
+
+Resume Analysis Module:
+Calls an AI analysis service to produce an ATS-style score and improvement suggestions. These suggestions can help users add relevant keywords and strengthen weak sections.
+
+Resume Save and Retrieval Module:
+Stores the final resume, analysis data, and timestamps in MongoDB. The saved version can be loaded later for interview preparation.
+
+Interview Preparation Module:
+Automatically uses the saved resume to generate personalized interview questions and support an interview session.
+
+Feedback Module:
+Shows post-interview results, improvement notes, and performance summaries so the user can track progress.
+
+9. Estimated Development Effort
+The project is estimated at about 76 development hours.
+
+Effort breakdown:
+- Discovery and planning: 6 hours
+- UI and responsive pages: 12 hours
+- Resume upload and preview: 10 hours
+- ATS analysis integration: 10 hours
+- Resume save/load APIs: 8 hours
+- Interview setup integration: 8 hours
+- Dashboard and feedback flow: 10 hours
+- Testing and bug fixing: 8 hours
+- Deployment and documentation: 4 hours
+
+Total: 76 hours
+
+10. Cost Estimation
+
+At $25/hour:
+- Lower estimate: 60 × $25 = $1,500
+- Expected estimate: 76 × $25 = $1,900
+- Higher estimate: 90 × $25 = $2,250
+
+At ₹2,000/hour:
+- Lower estimate: 60 × ₹2,000 = ₹120,000
+- Expected estimate: 76 × ₹2,000 = ₹152,000
+- Higher estimate: 90 × ₹2,000 = ₹180,000
+
+11. Monthly Operating Cost
+- Hosting: $0–$20
+- Database: $0–$25
+- AI usage: $20–$150
+- Domain and extras: $1–$10
+- Total: $21–$205
+
+12. Measurable Value
+The project can improve preparation efficiency by:
+- reducing resume review time by about 40–60%
+- reducing interview setup time by about 30–50%
+- helping users practice repeatedly with the same saved resume
+
+13. Risks and Assumptions
+- AI output quality may vary by model and prompt structure
+- Parsing quality depends on file format and resume layout
+- Costs may increase with high AI usage
+- MongoDB and AI environment variables must be configured correctly
+
+14. Future Enhancements
+- Drag-and-drop upload
+- Better PDF preview rendering
+- File validation and size limits
+- More detailed ATS scoring
+- Exportable interview reports
+- Richer dashboard analytics
+
+15. Conclusion
+AI Interview Simulator provides a practical end-to-end workflow for resume improvement and interview preparation. The platform is structured to support future enhancements while already delivering the core experience.

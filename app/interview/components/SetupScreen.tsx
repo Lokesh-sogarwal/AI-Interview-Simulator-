@@ -18,14 +18,44 @@ export default function SetupScreen(props: {
   onRequestMic: () => void;
   onLoadFaceDetection: () => void;
 }) {
+  const getStatusIcon = (status: "granted" | "denied" | "unknown" | "ready" | "loading" | "error" | "idle") => {
+    switch (status) {
+      case "granted":
+      case "ready":
+        return "✓";
+      case "loading":
+        return "⏳";
+      case "denied":
+      case "error":
+        return "✕";
+      default:
+        return "○";
+    }
+  };
+
+  const getStatusColor = (status: "granted" | "denied" | "unknown" | "ready" | "loading" | "error" | "idle") => {
+    switch (status) {
+      case "granted":
+      case "ready":
+        return "text-green-600";
+      case "loading":
+        return "text-blue-600";
+      case "denied":
+      case "error":
+        return "text-red-600";
+      default:
+        return "text-foreground/50";
+    }
+  };
+
   return (
     <section className="mx-auto grid max-w-3xl gap-6 py-8">
       {props.readyToStart ? (
-        <div className="rounded-3xl border border-foreground/10 bg-background p-8 text-center">
-          <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-foreground text-background">
-            <span className="text-base font-semibold">AI</span>
+        <div className="rounded-xl border border-foreground/10 bg-gradient-to-br from-green-500/5 to-emerald-500/5 p-8 text-center">
+          <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-green-600 text-white text-2xl">
+            ✓
           </div>
-          <h1 className="mt-4 text-balance text-2xl font-semibold tracking-tight">Ready to start</h1>
+          <h1 className="mt-4 text-balance text-2xl font-semibold tracking-tight">Ready to Start</h1>
           <p className="mt-2 text-pretty text-sm leading-6 text-foreground/70">{props.scheduleMessage}</p>
 
           <div className="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -33,16 +63,16 @@ export default function SetupScreen(props: {
               type="button"
               onClick={props.onStartInterview}
               disabled={!props.canStartNow}
-              className="inline-flex h-11 flex-1 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+              className="inline-flex h-12 flex-1 items-center justify-center rounded-lg bg-green-600 px-6 text-sm font-semibold text-white transition-all enabled:hover:bg-green-700 disabled:opacity-60"
             >
-              Start Interview
+              🎤 Begin Interview
             </button>
             <button
               type="button"
               onClick={props.onBack}
-              className="inline-flex h-11 flex-1 items-center justify-center rounded-full border border-foreground/15 px-5 text-sm font-medium transition-opacity hover:opacity-90"
+              className="inline-flex h-12 flex-1 items-center justify-center rounded-lg border border-foreground/15 px-6 text-sm font-medium transition-all hover:bg-foreground/5"
             >
-              Back to dashboard
+              Back to Dashboard
             </button>
           </div>
 
@@ -51,108 +81,162 @@ export default function SetupScreen(props: {
           </div>
         </div>
       ) : (
-        <div className="rounded-3xl border border-foreground/10 bg-background p-6">
-          <div className="flex flex-col gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">Setup</h1>
-            <p className="text-sm leading-6 text-foreground/70">
-              Allow camera/mic and load face detection. When everything is ready, you’ll see a Start button.
+        <div className="space-y-6">
+          {/* Setup Header */}
+          <div className="rounded-xl border border-foreground/10 bg-gradient-to-br from-blue-500/5 to-purple-500/5 p-6">
+            <h1 className="text-2xl font-bold text-foreground">Pre-Interview Setup</h1>
+            <p className="mt-2 text-sm text-foreground/70">
+              Complete the following checklist to prepare your environment. {props.interactionMode === "video" ? "Camera and microphone access required." : "No camera/mic needed for typing mode."}
             </p>
           </div>
 
-          <div className="mt-5 grid gap-3">
-            <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-              <div className="text-sm font-medium">Load resume context</div>
-              <div className="mt-1 text-sm text-foreground/70">{props.resumeStatusText}</div>
+          {/* Setup Checklist */}
+          <div className="space-y-3">
+            {/* Resume Context */}
+            <div className="rounded-lg border border-foreground/10 bg-background p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-start gap-3 flex-1">
+                  <span className={`text-lg font-semibold ${getStatusColor(props.needsResume ? "granted" : "granted")}`}>
+                    📄
+                  </span>
+                  <div>
+                    <div className="font-medium text-foreground">Resume Context</div>
+                    <div className="text-sm text-foreground/70 mt-1">{props.resumeStatusText}</div>
+                  </div>
+                </div>
+                <span className={`text-2xl font-bold ${getStatusColor(props.needsResume ? "granted" : "granted")}`}>
+                  {getStatusIcon("granted")}
+                </span>
+              </div>
             </div>
 
+            {/* Video Mode Checks */}
             {props.interactionMode === "video" ? (
               <>
-                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium">Camera permission</div>
-                      <div className="mt-1 text-sm text-foreground/70">
-                        {props.cameraPermission === "granted"
-                          ? "Granted"
-                          : props.cameraPermission === "denied"
-                            ? "Denied"
-                            : "Not granted yet"}
+                {/* Camera Permission */}
+                <div className="rounded-lg border border-foreground/10 bg-background p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-start gap-3 flex-1">
+                      <span className="text-lg font-semibold">📷</span>
+                      <div>
+                        <div className="font-medium text-foreground">Camera Permission</div>
+                        <div className="text-sm text-foreground/70 mt-1">
+                          {props.cameraPermission === "granted"
+                            ? "Camera access granted"
+                            : props.cameraPermission === "denied"
+                              ? "Camera access denied"
+                              : "Camera permission pending"}
+                        </div>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={props.onRequestCamera}
-                      disabled={props.cameraPermission === "granted"}
-                      className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                    >
-                      {props.cameraPermission === "granted" ? "Ready" : "Allow"}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-2xl font-bold ${getStatusColor(props.cameraPermission)}`}>
+                        {getStatusIcon(props.cameraPermission)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={props.onRequestCamera}
+                        disabled={props.cameraPermission === "granted"}
+                        className="inline-flex h-10 items-center justify-center rounded-lg border border-foreground/15 px-4 text-sm font-medium transition-all enabled:hover:bg-foreground/5 disabled:opacity-60"
+                      >
+                        {props.cameraPermission === "granted" ? "✓ Ready" : "Allow"}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium">Microphone permission</div>
-                      <div className="mt-1 text-sm text-foreground/70">
-                        {props.micPermission === "granted"
-                          ? "Granted"
-                          : props.micPermission === "denied"
-                            ? "Denied"
-                            : "Not granted yet"}
+                {/* Microphone Permission */}
+                <div className="rounded-lg border border-foreground/10 bg-background p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-start gap-3 flex-1">
+                      <span className="text-lg font-semibold">🎙️</span>
+                      <div>
+                        <div className="font-medium text-foreground">Microphone Permission</div>
+                        <div className="text-sm text-foreground/70 mt-1">
+                          {props.micPermission === "granted"
+                            ? "Microphone access granted"
+                            : props.micPermission === "denied"
+                              ? "Microphone access denied"
+                              : "Microphone permission pending"}
+                        </div>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={props.onRequestMic}
-                      disabled={props.micPermission === "granted"}
-                      className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                    >
-                      {props.micPermission === "granted" ? "Ready" : "Allow"}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-2xl font-bold ${getStatusColor(props.micPermission)}`}>
+                        {getStatusIcon(props.micPermission)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={props.onRequestMic}
+                        disabled={props.micPermission === "granted"}
+                        className="inline-flex h-10 items-center justify-center rounded-lg border border-foreground/15 px-4 text-sm font-medium transition-all enabled:hover:bg-foreground/5 disabled:opacity-60"
+                      >
+                        {props.micPermission === "granted" ? "✓ Ready" : "Allow"}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium">Face detection</div>
-                      <div className="mt-1 text-sm text-foreground/70">
+                {/* Face Detection */}
+                <div className="rounded-lg border border-foreground/10 bg-background p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-start gap-3 flex-1">
+                      <span className="text-lg font-semibold">👁️</span>
+                      <div>
+                        <div className="font-medium text-foreground">Face Detection</div>
+                        <div className="text-sm text-foreground/70 mt-1">
+                          {props.faceDetectionStatus === "ready"
+                            ? "Face detection ready"
+                            : props.faceDetectionStatus === "loading"
+                              ? "Loading face detection…"
+                              : props.faceDetectionStatus === "error"
+                                ? "Face detection unavailable"
+                                : "Load face detection"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-2xl font-bold ${getStatusColor(props.faceDetectionStatus)}`}>
+                        {getStatusIcon(props.faceDetectionStatus)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={props.onLoadFaceDetection}
+                        disabled={props.faceDetectionStatus === "ready" || props.faceDetectionStatus === "loading"}
+                        className="inline-flex h-10 items-center justify-center rounded-lg border border-foreground/15 px-4 text-sm font-medium transition-all enabled:hover:bg-foreground/5 disabled:opacity-60"
+                      >
                         {props.faceDetectionStatus === "ready"
-                          ? "Ready"
+                          ? "✓ Ready"
                           : props.faceDetectionStatus === "loading"
                             ? "Loading…"
-                            : props.faceDetectionStatus === "error"
-                              ? "Unavailable"
-                              : "Not loaded"}
-                      </div>
+                            : "Load"}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={props.onLoadFaceDetection}
-                      disabled={props.faceDetectionStatus === "ready" || props.faceDetectionStatus === "loading"}
-                      className="inline-flex h-10 items-center justify-center rounded-full border border-foreground/15 px-4 text-sm font-medium transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-                    >
-                      {props.faceDetectionStatus === "ready"
-                        ? "Ready"
-                        : props.faceDetectionStatus === "loading"
-                          ? "Loading…"
-                          : "Load"}
-                    </button>
                   </div>
                 </div>
               </>
             ) : (
-              <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-                <div className="text-sm font-medium">Typing practice</div>
-                <div className="mt-1 text-sm text-foreground/70">No camera/mic needed.</div>
+              <div className="rounded-lg border border-foreground/10 bg-background p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-start gap-3 flex-1">
+                    <span className="text-lg font-semibold">⌨️</span>
+                    <div>
+                      <div className="font-medium text-foreground">Typing Practice Mode</div>
+                      <div className="text-sm text-foreground/70 mt-1">No camera or microphone required</div>
+                    </div>
+                  </div>
+                  <span className="text-2xl font-bold text-green-600">✓</span>
+                </div>
               </div>
             )}
           </div>
 
-          <div className="mt-4 text-sm text-foreground/70" aria-live="polite">
-            {props.message}
-          </div>
+          {/* Status Message */}
+          {props.message && (
+            <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-4">
+              <p className="text-sm text-foreground/80">{props.message}</p>
+            </div>
+          )}
         </div>
       )}
     </section>
