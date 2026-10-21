@@ -1,27 +1,28 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
+
+import { Alert, Button, Field, Input } from "@/app/components/ui";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
-    "idle",
-  );
-  const [message, setMessage] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setError("");
 
-    if (!email || !password) {
-      setStatus("error");
-      setMessage("Please enter your email and password.");
-      return;
-    }
+    const errors: typeof fieldErrors = {};
+    if (!email.trim()) errors.email = "Enter your email address.";
+    if (!password) errors.password = "Enter your password.";
+    setFieldErrors(errors);
+    if (Object.keys(errors).length) return;
 
-    setStatus("loading");
-    setMessage("Signing you in…");
-
+    setLoading(true);
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
@@ -29,91 +30,72 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      const payload = (await response.json().catch(() => null)) as
-        | { ok: true; user: { id: string; name: string; email: string } }
-        | { ok: false; error: string }
-        | null;
+      const payload = (await response.json().catch(() => null)) as { ok: boolean; error?: string } | null;
 
-      if (!response.ok || !payload || payload.ok === false) {
-        setStatus("error");
-        setMessage(
-          payload && "error" in payload && payload.error
-            ? payload.error
-            : "Could not sign in. Please try again.",
-        );
+      if (!response.ok || !payload?.ok) {
+        setError(payload?.error || "Could not sign in. Please try again.");
+        setLoading(false);
         return;
       }
 
-      setStatus("success");
-      setMessage("Signed in. Redirecting…");
       window.location.href = "/";
     } catch {
-      setStatus("error");
-      setMessage("Could not sign in. Please try again.");
+      setError("Could not reach the server. Check your connection and try again.");
+      setLoading(false);
     }
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight">Welcome back</h1>
-        <p className="text-sm leading-6 text-foreground/70">
-          Sign in to continue your AI interview practice.
-        </p>
+    <div className="grid gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight text-text">Welcome back</h1>
+        <p className="mt-1.5 text-sm text-muted">Sign in to continue your interview practice.</p>
       </div>
 
-      <form onSubmit={onSubmit} className="grid gap-4">
-        <label className="grid gap-2">
-          <span className="text-sm font-medium">Email</span>
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            type="email"
-            autoComplete="email"
-            className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
-            placeholder="you@company.com"
-          />
-        </label>
+      {error ? <Alert tone="error">{error}</Alert> : null}
 
-        <label className="grid gap-2">
-          <span className="text-sm font-medium">Password</span>
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            autoComplete="current-password"
-            className="h-11 rounded-2xl border border-foreground/15 bg-background px-4 text-sm outline-none focus:border-foreground/30"
-            placeholder="••••••••"
-          />
-        </label>
+      <form onSubmit={onSubmit} className="grid gap-4" noValidate>
+        <Field label="Email" error={fieldErrors.email} required>
+          {({ id, describedBy, invalid }) => (
+            <Input
+              id={id}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              autoComplete="email"
+              inputMode="email"
+              placeholder="you@example.com"
+              aria-describedby={describedBy}
+              aria-invalid={invalid}
+            />
+          )}
+        </Field>
 
-        <button
-          type="submit"
-          disabled={status === "loading"}
-          className="inline-flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-        >
-          {status === "loading" ? "Signing in…" : "Sign in"}
-        </button>
+        <Field label="Password" error={fieldErrors.password} required>
+          {({ id, describedBy, invalid }) => (
+            <Input
+              id={id}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              autoComplete="current-password"
+              aria-describedby={describedBy}
+              aria-invalid={invalid}
+            />
+          )}
+        </Field>
 
-        <div
-          className={
-            status === "error"
-              ? "text-sm text-foreground"
-              : "text-sm text-foreground/70"
-          }
-          aria-live="polite"
-        >
-          {message || "Sign in with your account."}
-        </div>
+        <Button type="submit" size="lg" loading={loading} className="mt-1 w-full">
+          {loading ? "Signing in…" : "Sign in"}
+        </Button>
       </form>
 
-      <div className="text-sm text-foreground/70">
-        Don’t have an account?{" "}
-        <a href="/auth/signup" className="font-medium text-foreground">
-          Create one
-        </a>
-        .
-      </div>
+      <p className="text-sm text-muted">
+        New here?{" "}
+        <Link href="/auth/signup" className="font-semibold text-text underline-offset-2 hover:underline">
+          Create an account
+        </Link>
+      </p>
     </div>
   );
 }

@@ -2,6 +2,11 @@ import admin from "firebase-admin";
 
 let app: admin.app.App | null = null;
 
+/** Env files usually store the PEM key with literal "\n" sequences. */
+export function normalizePrivateKey(raw: string) {
+  return raw.includes("\\n") ? raw.replace(/\\n/g, "\n") : raw;
+}
+
 function init() {
   if (admin.apps.length) {
     app = admin.app();
@@ -10,29 +15,18 @@ function init() {
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  let privateKey = process.env.FIREBASE_PRIVATE_KEY || "";
-
-  if (privateKey && privateKey.includes('\\n')) {
-    // already contains newlines
-  } else if (privateKey) {
-    // replace escaped newlines
-    privateKey = privateKey.replace(/\\n/g, "\n");
-  }
+  const privateKey = normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY || "");
 
   if (projectId && clientEmail && privateKey) {
     admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId,
-        clientEmail,
-        privateKey,
-      } as any),
+      credential: admin.credential.cert({ projectId, clientEmail, privateKey }),
     });
   } else {
-    // fallback to default credentials (e.g., GCP environment)
+    // Fall back to application default credentials (e.g. on GCP).
     try {
       admin.initializeApp();
     } catch (e) {
-      // ignore
+      console.error("[firebase-admin] initialization failed:", e instanceof Error ? e.message : "unknown");
     }
   }
 

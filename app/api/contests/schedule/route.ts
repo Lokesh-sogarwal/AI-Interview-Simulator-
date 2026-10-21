@@ -1,45 +1,49 @@
-import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getCurrentUser, isAdminInDb } from "@/lib/auth";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { generateContestProblems } from "@/app/lib/problem-generator";
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
-  // Check if user is admin
-  if (!user.isAdmin) {
+  const db = await getDb();
+  if (!db) return Response.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
+
+  if (!(await isAdminInDb(db, user.id))) {
     return Response.json({ ok: false, error: "Only admins can schedule contests" }, { status: 403 });
   }
 
-  const db = await getDb();
-  if (!db) return Response.json({ ok: false, error: "Database not available" }, { status: 500 });
-
   try {
-    const body = await request.json();
-    const { 
-      name, 
-      description, 
-      frequency = "weekly", // "weekly" or "biweekly"
-      dayOfWeek = 5, // 0=Sunday, 5=Friday, 6=Saturday
-      startTime = "00:00", // "HH:MM" format
-      duration = 2, // hours
-      maxParticipants = 1000,
-      problemCount = 3,
-      startDate = new Date(),
-      endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
-    } = body;
+    const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body) return Response.json({ ok: false, error: "Invalid JSON body." }, { status: 400 });
+
+    const name = String(body.name ?? "").trim().slice(0, 100);
+    const description = typeof body.description === "string" ? body.description.slice(0, 2000) : "";
+    const frequency = body.frequency === "biweekly" ? "biweekly" : "weekly";
+    const dayOfWeek = Math.min(6, Math.max(0, Math.floor(Number(body.dayOfWeek ?? 5)) || 0));
+    const startTime = typeof body.startTime === "string" && /^\d{2}:\d{2}$/.test(body.startTime) ? body.startTime : "00:00";
+    const duration = Math.min(48, Math.max(1, Number(body.duration) || 2)); // hours
+    const maxParticipants = Math.min(100_000, Math.max(1, Math.floor(Number(body.maxParticipants) || 1000)));
+    const problemCount = Math.min(10, Math.max(1, Math.floor(Number(body.problemCount) || 3)));
+    const startDate = body.startDate ? new Date(String(body.startDate)) : new Date();
+    const endDate = body.endDate ? new Date(String(body.endDate)) : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
 
     if (!name) {
       return Response.json({ ok: false, error: "Missing contest name" }, { status: 400 });
     }
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
+      return Response.json({ ok: false, error: "Invalid startDate/endDate." }, { status: 400 });
+    }
 
+    // Each contest triggers AI problem generation; cap the batch size.
+    const MAX_SCHEDULED = 60;
     const createdContests = [];
-    let currentDate = new Date(startDate);
+    const currentDate = new Date(startDate);
     const finalDate = new Date(endDate);
     const increment = frequency === "biweekly" ? 14 : 7; // days
 
     // Generate contests for the specified period
-    while (currentDate <= finalDate) {
+    while (currentDate <= finalDate && createdContests.length < MAX_SCHEDULED) {
       // Find next occurrence of desired day
       const daysDifference = (dayOfWeek - currentDate.getDay() + 7) % 7;
       if (daysDifference > 0) {

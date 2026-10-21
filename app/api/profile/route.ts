@@ -1,9 +1,9 @@
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
-import { calculateUserMetrics } from "@/app/lib/ranking-calculator";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
+import { calculateUserMetrics, getUserRank, interviewScore100 } from "@/app/lib/ranking-calculator";
 import { NextResponse } from "next/server";
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
     const user = await getCurrentUser();
     if (!user) {
@@ -16,7 +16,7 @@ export async function GET(request: Request) {
     const db = await getDb();
     if (!db) {
       return NextResponse.json(
-        { ok: false, error: "Database not available" },
+        { ok: false, error: dbUnavailableMessage() },
         { status: 503 }
       );
     }
@@ -25,20 +25,27 @@ export async function GET(request: Request) {
     const metrics = await calculateUserMetrics(user.id, db);
 
     // Get interview statistics
-    const interviews = await db.collection("interviews").find({ userId: user.id }).toArray();
+    const interviews = await db
+      .collection("interviews")
+      .find({ userId: user.id }, { projection: { difficulty: 1, type: 1, role: 1, status: 1, averageScore: 1, totalScore: 1, createdAt: 1 } })
+      .sort({ createdAt: -1 })
+      .limit(1000)
+      .toArray();
+    const lower = (v: unknown) => String(v ?? "").toLowerCase();
     
     // Get breakdown by difficulty
     const difficultyBreakdown = {
-      easy: interviews.filter((i: any) => i.difficulty === "easy").length,
-      medium: interviews.filter((i: any) => i.difficulty === "medium").length,
-      hard: interviews.filter((i: any) => i.difficulty === "hard").length,
+      easy: interviews.filter((i) => lower(i.difficulty) === "easy").length,
+      medium: interviews.filter((i) => lower(i.difficulty) === "medium").length,
+      hard: interviews.filter((i) => lower(i.difficulty) === "hard").length,
+      adaptive: interviews.filter((i) => lower(i.difficulty) === "adaptive").length,
     };
 
     // Get breakdown by type
     const typeBreakdown = {
-      hr: interviews.filter((i: any) => i.type === "hr").length,
-      technical: interviews.filter((i: any) => i.type === "technical").length,
-      behavioral: interviews.filter((i: any) => i.type === "behavioral").length,
+      hr: interviews.filter((i) => lower(i.type) === "hr").length,
+      technical: interviews.filter((i) => lower(i.type) === "technical").length,
+      mixed: interviews.filter((i) => lower(i.type) === "mixed").length,
     };
 
     // Get contest participation
@@ -47,33 +54,27 @@ export async function GET(request: Request) {
       .find({ userId: user.id })
       .toArray();
 
-    // Get recent submissions
-    const recentSubmissions = await db
-      .collection("interviews")
-      .find({ userId: user.id })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
+    const recentSubmissions = interviews.slice(0, 5);
 
-    // Calculate acceptance rate
-    const completedInterviews = interviews.filter((i: any) => i.totalScore > 0).length;
+    // Completion rate: finished sessions out of all sessions started.
+    const completedInterviews = interviews.filter((i) => i.status === "completed").length;
     const acceptanceRate = interviews.length > 0 
       ? Math.round((completedInterviews / interviews.length) * 100)
       : 0;
 
-    // Get user rank
-    const allUsers = await db.collection("leaderboard_cache").find({}).toArray();
-    const userRank = allUsers.findIndex((entry: any) => entry.userId === user.id) + 1 || 0;
+    const userRank = (await getUserRank(user.id, db))?.rank ?? 0;
 
     // Get top categories (interview roles where user performed best)
     const roleScores: Record<string, { count: number; totalScore: number }> = {};
-    interviews.forEach((i: any) => {
-      const role = i.role || "Unknown";
+    interviews.forEach((i) => {
+      const score = interviewScore100(i);
+      if (score === null) return;
+      const role = String(i.role || "Unknown");
       if (!roleScores[role]) {
         roleScores[role] = { count: 0, totalScore: 0 };
       }
       roleScores[role].count++;
-      roleScores[role].totalScore += i.totalScore || 0;
+      roleScores[role].totalScore += score;
     });
 
     const topRoles = Object.entries(roleScores)
@@ -107,20 +108,21 @@ export async function GET(request: Request) {
           byType: typeBreakdown,
           byRole: topRoles,
         },
-        recentSubmissions: recentSubmissions.map((i: any) => ({
+        recentSubmissions: recentSubmissions.map((i) => ({
           id: i._id,
           role: i.role,
           type: i.type,
           difficulty: i.difficulty,
-          score: i.totalScore,
+          status: i.status,
+          score: interviewScore100(i),
           createdAt: i.createdAt,
         })),
       },
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error fetching profile:", error);
     return NextResponse.json(
-      { ok: false, error: error.message || "Failed to fetch profile" },
+      { ok: false, error: "Failed to fetch profile" },
       { status: 500 }
     );
   }

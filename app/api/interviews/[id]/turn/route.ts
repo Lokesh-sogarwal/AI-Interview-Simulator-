@@ -1,9 +1,11 @@
 import { ObjectId } from "mongodb";
 
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
+import { findPendingEvaluation, noAnswerEvaluation, turnKey } from "@/lib/interviewRecords";
+import { isClosedStatus } from "@/lib/interviewFlow";
 
 function allowAnonymousInterviews() {
   return process.env.ALLOW_ANON_INTERVIEWS === "true" || process.env.NODE_ENV !== "production";
@@ -37,7 +39,7 @@ export async function POST(
   const db = await getDb();
   if (!db) {
     return Response.json(
-      { ok: false, error: "Database is not configured." },
+      { ok: false, error: dbUnavailableMessage() },
       { status: 503 },
     );
   }
@@ -51,51 +53,72 @@ export async function POST(
     | {
         question?: string;
         answer?: string;
-        evaluation?: unknown;
         star?: unknown;
         askedAt?: string;
         answeredAt?: string;
       }
     | null;
 
-  const question = clampString(body?.question?.trim() || "", 800);
-  const answer = clampString(body?.answer?.trim() || "", 4000);
-  if (!question || !answer) {
-    return Response.json(
-      { ok: false, error: "Missing question or answer." },
-      { status: 400 },
-    );
+  const question = clampString(String(body?.question ?? "").trim(), 800);
+  // An empty answer is valid: it records a question that timed out unanswered.
+  const answer = clampString(String(body?.answer ?? "").trim(), 4000);
+  if (!question) {
+    return Response.json({ ok: false, error: "Missing question." }, { status: 400 });
   }
+
+  const interviews = db.collection("interviews");
+  const ownerFilter = { _id: new ObjectId(id), ...(user ? { userId: user.id } : { anonId }) };
+  const doc = await interviews.findOne(ownerFilter, {
+    projection: { status: 1, pendingEvaluations: 1, "turns.question": 1, "turns.answer": 1 },
+  });
+
+  if (!doc) {
+    return Response.json({ ok: false, error: "Interview not found." }, { status: 404 });
+  }
+  if (isClosedStatus(doc.status)) {
+    return Response.json({ ok: false, error: "This interview has already ended." }, { status: 409 });
+  }
+
+  // Double submits (retries, double clicks, timer + click races) are idempotent.
+  const alreadySaved = (Array.isArray(doc.turns) ? doc.turns : []).some(
+    (t: { question?: unknown; answer?: unknown }) => t?.question === question && t?.answer === answer,
+  );
+  if (alreadySaved) {
+    return Response.json({ ok: true, duplicate: true });
+  }
+
+  // Scores are only ever taken from evaluations the server produced itself.
+  const evaluation = answer ? findPendingEvaluation(doc, turnKey(question, answer)) : noAnswerEvaluation();
 
   const now = new Date();
   const askedAt = body?.askedAt ? new Date(body.askedAt) : undefined;
   const answeredAt = body?.answeredAt ? new Date(body.answeredAt) : undefined;
 
-  const interviews = db.collection<any>("interviews");
   const update = await interviews.updateOne(
     {
-      _id: new ObjectId(id),
-      ...(user ? { userId: user.id } : { anonId }),
+      ...ownerFilter,
       status: { $nin: ["completed", "terminated"] },
+      turns: { $not: { $elemMatch: { question, answer } } },
     },
     {
       $push: {
         turns: {
           question,
           answer,
-          evaluation: body?.evaluation ?? null,
+          evaluation,
           star: body?.star ?? null,
           askedAt: askedAt && !Number.isNaN(askedAt.getTime()) ? askedAt : null,
           answeredAt: answeredAt && !Number.isNaN(answeredAt.getTime()) ? answeredAt : now,
         },
       },
       $set: { updatedAt: now, status: "in_progress" },
-    } as any,
+    } as never,
   );
 
   if (update.matchedCount === 0) {
-    return Response.json({ ok: false, error: "Interview not found." }, { status: 404 });
+    // Lost a race with a concurrent identical submit.
+    return Response.json({ ok: true, duplicate: true });
   }
 
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, evaluated: Boolean(evaluation) });
 }

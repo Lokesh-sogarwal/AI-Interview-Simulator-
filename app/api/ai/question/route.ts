@@ -6,7 +6,9 @@ import {
   type Difficulty,
   type InterviewType,
 } from "@/lib/prompts";
+import { getCurrentUser } from "@/lib/auth";
 import { llmText } from "@/lib/llm";
+import { jsonError } from "@/lib/http";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
 
@@ -53,8 +55,12 @@ function stageForQuestionNumber(questionNumber: number) {
 }
 
 export async function POST(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) return jsonError("Unauthorized", 401);
+
   const rl = rateLimit(request, {
     keyPrefix: "ai:question",
+    key: user.id,
     limit: 30,
     windowMs: 10 * 60 * 1000,
   });
@@ -102,7 +108,7 @@ export async function POST(request: Request) {
   const stage = stageForQuestionNumber(questionNumber);
 
   const system = resumeContext ? resumeQuestionSystemPrompt() : questionSystemPrompt();
-  const user = resumeContext
+  const prompt = resumeContext
     ? resumeQuestionUserPrompt({
         parsedResume: resumeContext.slice(0, 4000),
         role,
@@ -119,7 +125,7 @@ export async function POST(request: Request) {
 
   const aiQuestion = await llmText({
     system,
-    user,
+    user: prompt,
     models: {
       huggingface: process.env.HUGGINGFACE_MODEL_QUESTION || process.env.HUGGINGFACE_MODEL,
       openai: process.env.OPENAI_MODEL,
@@ -129,7 +135,9 @@ export async function POST(request: Request) {
     return Response.json({ ok: true, question: aiQuestion.text, source: aiQuestion.provider });
   }
 
-  const candidates = fallbackQuestions(type);
+  const asked = new Set(previousQuestions.map((q) => q.toLowerCase()));
+  const candidates = fallbackQuestions(type).filter((q) => !asked.has(q.toLowerCase()));
+  if (candidates.length === 0) return jsonError("Question generation is temporarily unavailable.", 503);
   const question = candidates[Math.floor(Math.random() * candidates.length)];
   return Response.json({ ok: true, question, source: "fallback" });
 }

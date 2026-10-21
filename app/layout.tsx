@@ -1,8 +1,10 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import Sidebar from "./components/Sidebar";
+import AppShell from "./components/shell/AppShell";
 import { getCurrentUser } from "@/lib/auth";
+import { getUserRole, hasRole } from "@/lib/roles";
+import { getDb } from "@/lib/mongodb";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,9 +17,18 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Interview Simulator",
+  title: {
+    default: "AI Interview Simulator",
+    template: "%s · AI Interview Simulator",
+  },
   description:
-    "Upload your resume, take an AI HR interview, and get feedback with key improvements.",
+    "Practice HR, technical and mixed interviews with an AI interviewer, get structured feedback, check your resume and solve coding challenges.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#30364F",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default async function RootLayout({
@@ -26,17 +37,16 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const user = await getCurrentUser();
+  // The admin link reflects the database flag, not just the session token.
+  const db = user ? await getDb() : null;
+  const role = user && db ? ((await getUserRole(db, user.id)) ?? "user") : "user";
+  const isAdmin = hasRole(role, "admin");
 
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {user ? (
-          <div className="flex min-h-dvh">
-            <Sidebar />
-            <main className="flex-1 md:ml-0">{children}</main>
-          </div>
+          <AppShell user={{ name: user.name, email: user.email, isAdmin }}>{children}</AppShell>
         ) : (
           children
         )}

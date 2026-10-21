@@ -1,7 +1,9 @@
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
+import { loadOwnResume } from "@/lib/resumeStore";
+import { parseDifficulty, parseInterviewType } from "@/lib/interviewFlow";
 
 export async function POST(request: Request) {
   const rl = rateLimit(request, {
@@ -19,7 +21,7 @@ export async function POST(request: Request) {
   const db = await getDb();
   if (!db) {
     return Response.json(
-      { ok: false, error: "Database is not configured." },
+      { ok: false, error: dbUnavailableMessage() },
       { status: 503 },
     );
   }
@@ -36,6 +38,7 @@ export async function POST(request: Request) {
         interactionMode?: "typing" | "video";
         useResume?: boolean;
         resumeText?: string;
+        resumeId?: string;
       }
     | null;
 
@@ -58,14 +61,15 @@ export async function POST(request: Request) {
 
   const role = clampString(String(body?.role || "Software Engineer").trim() || "Software Engineer", 120);
   const experience = clampString(String(body?.experience || "0-2 years").trim() || "0-2 years", 40);
-  const type = clampString(String(body?.type || "Mixed").trim() || "Mixed", 40);
-  const difficulty = clampString(String(body?.difficulty || "Adaptive").trim() || "Adaptive", 24);
+  const type = parseInterviewType(body?.type, "Mixed");
+  const difficulty = parseDifficulty(body?.difficulty, "Adaptive");
   const company = clampString(String(body?.company || "").trim(), 80);
   const focusAreas = clampString(String(body?.focusAreas || "").trim(), 600);
   const interactionMode = body?.interactionMode === "video" ? "video" : "typing";
   const useResume = body?.useResume !== false;
   const resumeText = useResume ? clampString(String(body?.resumeText || "").trim(), 12000) : "";
 
+  const ownResume = useResume && body?.resumeId ? await loadOwnResume(db, user.id, body.resumeId) : null;
   const reminderDueAt = new Date(Math.max(now, scheduledFor.getTime() - 15 * 60 * 1000));
 
   const result = await db.collection("interviews").insertOne({
@@ -79,6 +83,7 @@ export async function POST(request: Request) {
     interactionMode,
     useResume,
     resumeText: resumeText || null,
+    resumeId: ownResume ? String(ownResume._id) : null,
     status: "scheduled",
     scheduledFor,
     reminderDueAt,

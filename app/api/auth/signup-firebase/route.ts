@@ -1,8 +1,12 @@
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { setAuthCookie, signAuthToken } from "@/lib/auth";
 import { getFirebaseAdmin } from "@/lib/firebaseAdmin";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
+  const rl = rateLimit(request, { keyPrefix: "auth:signup-firebase", limit: 10, windowMs: 10 * 60 * 1000 });
+  if (!rl.ok) return rateLimitResponse(rl.resetAt);
+
   const body = (await request.json().catch(() => null)) as { idToken?: string; dob?: string } | null;
   const idToken = body?.idToken || "";
   const dob = body?.dob || "";
@@ -28,16 +32,20 @@ export async function POST(request: Request) {
     if (age <= 15) return Response.json({ ok: false, error: "You must be at least 16 years old." }, { status: 403 });
 
     const db = await getDb();
-    if (!db) return Response.json({ ok: false, error: "Database not configured." }, { status: 503 });
+    if (!db) return Response.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
 
     // Create or update local user record
-    const existing = await db.collection("users").findOne({ firebaseUid: uid });
+    // Link to an existing account with the same (Firebase-verified) email instead
+    // of creating a duplicate user.
+    const existing =
+      (await db.collection("users").findOne({ firebaseUid: uid })) ??
+      (email ? await db.collection("users").findOne({ email: email.toLowerCase() }) : null);
     let userId = existing ? String(existing._id) : null;
     if (!existing) {
       const nowDate = new Date();
       const res = await db.collection("users").insertOne({
         name: decoded.name || "",
-        email,
+        email: email.toLowerCase(),
         firebaseUid: uid,
         dob: dobDate.toISOString(),
         age,
@@ -48,18 +56,22 @@ export async function POST(request: Request) {
       });
       userId = String(res.insertedId);
     } else {
-      await db.collection("users").updateOne({ _id: existing._id }, { $set: { emailVerified: true, phone: phoneNumber || existing.phone } });
+      await db.collection("users").updateOne({ _id: existing._id }, { $set: { emailVerified: true, firebaseUid: uid, phone: phoneNumber || existing.phone } });
       userId = String(existing._id);
     }
 
-    const user = { id: userId, name: decoded.name || "", email };
+    const user = {
+      id: userId,
+      name: String(existing?.name || decoded.name || ""),
+      email: email.toLowerCase(),
+      isAdmin: Boolean(existing?.isAdmin),
+    };
     const token = await signAuthToken(user);
     await setAuthCookie(token);
 
     return Response.json({ ok: true, user });
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error("Firebase token verify error", err);
+    console.error("Firebase token verify error:", err instanceof Error ? err.message : "unknown");
     return Response.json({ ok: false, error: "Invalid or expired token." }, { status: 401 });
   }
 }

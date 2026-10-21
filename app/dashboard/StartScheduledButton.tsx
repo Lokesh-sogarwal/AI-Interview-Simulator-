@@ -1,5 +1,10 @@
 "use client";
 
+import { Play } from "lucide-react";
+
+import { Button } from "@/app/components/ui";
+import { parseDetails, saveDetails, saveInterviewId, saveResumeText } from "@/app/lib/interviewStorage";
+
 type ScheduledDetails = {
   id: string;
   type: string;
@@ -13,46 +18,33 @@ type ScheduledDetails = {
   resumeText?: string | null;
 };
 
-const DETAILS_KEY = "aisim_interview_details";
-const RESUME_KEY = "aisim_resume_text";
-const INTERVIEW_ID_KEY = "aisim_interview_id";
-
-export default function StartScheduledButton({ details }: { details: ScheduledDetails }) {
+/** Loads a scheduled interview's saved configuration and opens the live session. */
+export default function StartScheduledButton({ details, disabled, size = "sm" }: { details: ScheduledDetails; disabled?: boolean; size?: "sm" | "md" }) {
   return (
-    <button
-      type="button"
+    <Button
+      size={size}
+      disabled={disabled}
+      icon={<Play className="size-3.5" aria-hidden />}
       onClick={() => {
-        try {
-          window.localStorage.setItem(
-            DETAILS_KEY,
-            JSON.stringify({
-              type: details.type,
-              role: details.role,
-              experience: details.experience,
-              difficulty: details.difficulty,
-              company: details.company || "",
-              focusAreas: details.focusAreas || "",
-              useResume: details.useResume !== false,
-              interactionMode: details.interactionMode === "video" ? "video" : "typing",
-            }),
-          );
-
-          if (details.useResume !== false && details.resumeText && details.resumeText.trim()) {
-            window.localStorage.setItem(RESUME_KEY, details.resumeText);
-          } else {
-            window.localStorage.removeItem(RESUME_KEY);
-          }
-
-          window.localStorage.setItem(INTERVIEW_ID_KEY, details.id);
-        } catch {
-          // Ignore storage errors; still try to navigate.
-        }
-
+        const parsed = parseDetails(
+          JSON.stringify({
+            type: details.type,
+            role: details.role,
+            experience: details.experience,
+            difficulty: details.difficulty,
+            company: details.company || "",
+            focusAreas: details.focusAreas || "",
+            useResume: details.useResume !== false,
+            interactionMode: details.interactionMode,
+          }),
+        );
+        if (parsed) saveDetails(parsed);
+        saveResumeText(details.useResume !== false ? details.resumeText ?? null : null);
+        saveInterviewId(details.id);
         window.location.href = "/interview";
       }}
-      className="inline-flex h-9 items-center justify-center rounded-full bg-foreground px-4 text-sm font-medium text-background transition-opacity hover:opacity-90"
     >
       Start
-    </button>
+    </Button>
   );
 }

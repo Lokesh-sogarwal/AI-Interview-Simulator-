@@ -1,9 +1,10 @@
 import bcrypt from "bcryptjs";
 
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { setAuthCookie, signAuthToken } from "@/lib/auth";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { isValidEmail } from "@/lib/validators";
+import { hasRole, roleFromDoc } from "@/lib/roles";
 
 export async function POST(request: Request) {
   const rl = rateLimit(request, {
@@ -34,13 +35,16 @@ export async function POST(request: Request) {
     );
   }
 
+  // Per-account limit so one account cannot be brute-forced from many IPs.
+  const perAccount = rateLimit(request, { keyPrefix: "auth:login:acct", key: email, limit: 10, windowMs: 10 * 60 * 1000 });
+  if (!perAccount.ok) return rateLimitResponse(perAccount.resetAt);
+
   const db = await getDb();
   if (!db) {
     return Response.json(
       {
         ok: false,
-        error:
-          "Database is not configured. Set MONGODB_URI to enable signup/login.",
+        error: dbUnavailableMessage(),
       },
       { status: 503 },
     );
@@ -81,7 +85,8 @@ export async function POST(request: Request) {
     id: String(userDoc._id),
     name: String(userDoc.name || ""),
     email: String(userDoc.email || ""),
-    isAdmin: Boolean(userDoc.isAdmin || false),
+    // Informational only: every privileged request re-reads the role from the database.
+    isAdmin: hasRole(roleFromDoc(userDoc), "admin"),
   };
 
   const token = await signAuthToken(user);

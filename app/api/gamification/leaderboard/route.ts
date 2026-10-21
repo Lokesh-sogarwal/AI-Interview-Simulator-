@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
     const db = await getDb();
-    if (!db) return NextResponse.json({ ok: false, error: "Database not configured." }, { status: 503 });
+    if (!db) return NextResponse.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
 
     const users = db.collection("users");
     
@@ -41,9 +41,10 @@ export async function GET(request: Request) {
       leaderboard,
       updatedAt: new Date().toISOString(),
     });
-  } catch (err: any) {
+  } catch (err) {
+    console.error("[api]", err);
     return NextResponse.json(
-      { ok: false, error: err?.message ?? "Failed to fetch leaderboard" },
+      { ok: false, error: "Failed to fetch leaderboard" },
       { status: 500 }
     );
   }

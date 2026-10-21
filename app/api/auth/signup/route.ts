@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 
-import { getDb } from "@/lib/mongodb";
+import { getDb, isDuplicateKeyError, dbUnavailableMessage } from "@/lib/mongodb";
 import { setAuthCookie, signAuthToken } from "@/lib/auth";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { isValidEmail, isValidPassword } from "@/lib/validators";
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
 
   if (!name || !email || !password || !dob) {
     return Response.json(
-      { ok: false, error: "Missing name, email, or password." },
+      { ok: false, error: "Missing name, email, password, or date of birth." },
       { status: 400 },
     );
   }
@@ -68,8 +68,7 @@ export async function POST(request: Request) {
     return Response.json(
       {
         ok: false,
-        error:
-          "Database is not configured. Set MONGODB_URI to enable signup/login.",
+        error: dbUnavailableMessage(),
       },
       { status: 503 },
     );
@@ -83,19 +82,35 @@ export async function POST(request: Request) {
     );
   }
 
+  if (dobDate.getTime() > Date.now() || age > 120) {
+    return Response.json({ ok: false, error: "Invalid date of birth." }, { status: 400 });
+  }
+  if (phone && !/^\+?[0-9\s-]{7,20}$/.test(phone)) {
+    return Response.json({ ok: false, error: "Invalid phone number." }, { status: 400 });
+  }
+
   const passwordHash = await bcrypt.hash(password, 10);
   const nowDate = new Date();
-  const result = await db.collection("users").insertOne({
-    name,
-    email,
-    passwordHash,
-    dob: dobDate.toISOString(),
-    age,
-    phone: phone || null,
-    phoneVerified: false,
-    emailVerified: false,
-    createdAt: nowDate,
-  });
+  let result;
+  try {
+    result = await db.collection("users").insertOne({
+      name,
+      email,
+      passwordHash,
+      dob: dobDate.toISOString(),
+      age,
+      phone: phone || null,
+      phoneVerified: false,
+      emailVerified: false,
+      createdAt: nowDate,
+    });
+  } catch (err) {
+    // Two concurrent signups with the same email: the unique index wins.
+    if (isDuplicateKeyError(err)) {
+      return Response.json({ ok: false, error: "An account with this email already exists." }, { status: 409 });
+    }
+    throw err;
+  }
 
   const user = { id: String(result.insertedId), name, email };
   const token = await signAuthToken(user);

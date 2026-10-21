@@ -1,4 +1,4 @@
-import type { Difficulty, InterviewType } from "@/lib/prompts";
+import { adjustDifficulty, type Difficulty, type InterviewType } from "@/lib/prompts";
 
 export type InterviewStage =
   | "Introduction"
@@ -207,7 +207,7 @@ export function statefulQuestionUserPrompt(params: {
         : "Candidate language: English. Ask the next question in English.";
 
   const resumeLine = params.resumeContext?.trim()
-    ? `Resume context (use for grounded, specific questions): ${params.resumeContext.trim().slice(0, 2500)}`
+    ? `Resume context (use for grounded, specific questions): ${params.resumeContext.trim().slice(0, 3500)}`
     : "";
 
   const lastTurnLine = params.lastTurn?.question?.trim()
@@ -246,4 +246,39 @@ export function statefulQuestionUserPrompt(params: {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+export const INTERVIEW_TYPES: readonly InterviewType[] = ["HR", "Technical", "Mixed"];
+export const DIFFICULTIES: readonly Difficulty[] = ["Easy", "Medium", "Hard", "Adaptive"];
+
+export function parseInterviewType(value: unknown, fallback: InterviewType = "Mixed"): InterviewType {
+  return INTERVIEW_TYPES.includes(value as InterviewType) ? (value as InterviewType) : fallback;
+}
+
+export function parseDifficulty(value: unknown, fallback: Difficulty = "Adaptive"): Difficulty {
+  return DIFFICULTIES.includes(value as Difficulty) ? (value as Difficulty) : fallback;
+}
+
+/**
+ * Resolves the concrete difficulty for the next question. Fixed settings are
+ * returned as-is; Adaptive starts at Medium and moves one step per answer
+ * based on that answer's overall score (see adjustDifficulty).
+ */
+export function resolveEffectiveDifficulty(
+  setting: Difficulty,
+  turns: Array<{ evaluation?: { overall_score?: unknown } | null }>,
+): Exclude<Difficulty, "Adaptive"> {
+  if (setting !== "Adaptive") return setting;
+  let current: Exclude<Difficulty, "Adaptive"> = "Medium";
+  for (const turn of turns) {
+    const score = Number(turn?.evaluation?.overall_score);
+    if (!Number.isFinite(score)) continue;
+    current = adjustDifficulty(current, score) as Exclude<Difficulty, "Adaptive">;
+  }
+  return current;
+}
+
+/** True when the interview can no longer accept answers or new questions. */
+export function isClosedStatus(status: unknown) {
+  return status === "completed" || status === "terminated";
 }

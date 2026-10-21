@@ -1,250 +1,193 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { use, useState } from "react";
+import { CircleCheck, ChevronLeft, ChevronRight, CodeXml, Trophy } from "lucide-react";
 
-interface ContestDetail {
+import {
+  Alert,
+  Badge,
+  Button,
+  ButtonLink,
+  Card,
+  CardBody,
+  CardHeader,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageContainer,
+  PageHeader,
+  StatCard,
+  cn,
+} from "@/app/components/ui";
+import { formatDateTime } from "@/app/lib/format";
+import { postJson, useApi } from "@/app/lib/useApi";
+
+type ContestDetail = {
   _id: string;
   name: string;
-  description: string;
+  description?: string;
+  rules?: string;
   startDate: string;
   endDate: string;
-  rules: string;
   isRegistered: boolean;
   participantCount: number;
-  problems?: Array<{
-    title: string;
-    description: string;
-    difficulty: string;
-    constraints: string;
-    examples: Array<{
-      input: string;
-      output: string;
-      explanation?: string;
-    }>;
-    topics: string[];
-  }>;
-}
+  maxParticipants?: number;
+  problems: Array<{ title: string; difficulty: string }>;
+  myScore: number | null;
+  solvedProblems: number[];
+  phase: "upcoming" | "active" | "ended";
+};
 
-interface LeaderboardEntry {
-  rank: number;
-  username: string;
-  score: number;
-  rating: number;
-  status: string;
-}
+type Board = {
+  leaderboard: Array<{ rank: number; userId: string; username: string; isMe: boolean; score: number; solvedCount: number; status: string }>;
+  totalPages: number;
+  total: number;
+};
+
+const PHASE_LABEL = { active: "Live", upcoming: "Upcoming", ended: "Ended" } as const;
 
 export default function ContestDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const router = useRouter();
-  const [id, setId] = useState<string>("");
-  const [contest, setContest] = useState<ContestDetail | null>(null);
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { id } = use(params);
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const contest = useApi<{ contest: ContestDetail }>(`/api/contests/${encodeURIComponent(id)}/register`);
+  const board = useApi<Board>(`/api/contests/${encodeURIComponent(id)}/leaderboard?page=${page}`);
+  const [registering, setRegistering] = useState(false);
+  const [regError, setRegError] = useState("");
 
-  useEffect(() => {
-    params.then((p) => setId(p.id));
-  }, [params]);
+  const c = contest.data?.contest;
 
-  useEffect(() => {
-    if (!id) return;
+  async function register() {
+    setRegistering(true);
+    setRegError("");
+    const res = await postJson(`/api/contests/${encodeURIComponent(id)}/register`, {}).catch(() => null);
+    if (!res?.ok) setRegError(res?.data?.error || "Registration failed.");
+    else {
+      contest.reload();
+      board.reload();
+    }
+    setRegistering(false);
+  }
 
-    const fetchData = async () => {
-      try {
-        const [contestRes, leaderboardRes] = await Promise.all([
-          fetch(`/api/contests/${id}/register`),
-          fetch(`/api/contests/${id}/leaderboard?page=${page}`),
-        ]);
-
-        if (contestRes.ok) {
-          const data = await contestRes.json();
-          if (data.ok) setContest(data.contest);
-        }
-
-        if (leaderboardRes.ok) {
-          const data = await leaderboardRes.json();
-          if (data.ok) {
-            setLeaderboard(data.leaderboard);
-            setTotalPages(data.totalPages);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to fetch data:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, [id, page]);
-
-  if (loading || !contest) {
+  if (contest.loading) return <PageContainer><LoadingState label="Loading contest…" /></PageContainer>;
+  if (contest.error || !c) {
     return (
-      <div className="min-h-screen bg-background text-foreground p-6">
-        <div className="mx-auto max-w-6xl">
-          <p className="text-center text-foreground/70">Loading...</p>
-        </div>
-      </div>
+      <PageContainer width="narrow">
+        <ErrorState title="Contest unavailable" description={contest.error || "Contest not found."} onRetry={contest.reload} />
+        <ButtonLink href="/contests" variant="secondary" className="mt-4">Back to contests</ButtonLink>
+      </PageContainer>
     );
   }
 
-  const now = new Date();
-  const startDate = new Date(contest.startDate);
-  const endDate = new Date(contest.endDate);
-  const isActive = now >= startDate && now <= endDate && contest.isRegistered;
+  const canSolve = c.isRegistered && c.phase === "active";
+  const solved = new Set(c.solvedProblems ?? []);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
-        <Link href="/contests" className="text-sm underline underline-offset-4 hover:opacity-90">
-          Back to contests
-        </Link>
-        {isActive && (
-          <Link
-            href={`/interview/setup?contest=${id}`}
-            className="inline-flex h-10 items-center justify-center rounded-full bg-foreground px-4 text-sm font-medium text-background hover:opacity-90"
-          >
-            Take Contest
-          </Link>
-        )}
-      </header>
+    <PageContainer>
+      <PageHeader
+        breadcrumbs={[{ label: "Contests", href: "/contests" }, { label: c.name }]}
+        title={c.name}
+        description={c.description}
+        actions={
+          !c.isRegistered && c.phase !== "ended" ? (
+            <Button onClick={register} loading={registering}>Register</Button>
+          ) : canSolve && c.problems.length ? (
+            <ButtonLink href={`/contests/challenge?contestId=${encodeURIComponent(id)}&problemIndex=0`} icon={<CodeXml className="size-4" aria-hidden />}>
+              Start solving
+            </ButtonLink>
+          ) : undefined
+        }
+      />
+      {regError ? <Alert tone="error" className="mb-4">{regError}</Alert> : null}
+      {c.phase === "upcoming" ? <Alert tone="info" className="mb-4">Problems unlock when the contest starts on {formatDateTime(c.startDate)}.</Alert> : null}
+      {c.phase === "ended" ? <Alert tone="info" className="mb-4">This contest has ended. Submissions are closed.</Alert> : null}
 
-      <main className="mx-auto w-full max-w-6xl px-6 pb-16">
-        <div className="rounded-3xl border border-foreground/10 bg-background p-6 md:p-8">
-          <h1 className="text-3xl font-semibold">{contest.name}</h1>
-          <p className="mt-2 text-foreground/70">{contest.description}</p>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard label="Status" value={PHASE_LABEL[c.phase]} hint={`Ends ${formatDateTime(c.endDate)}`} />
+        <StatCard label="Participants" value={c.participantCount} hint={c.maxParticipants ? `of ${c.maxParticipants}` : undefined} />
+        <StatCard label="Problems" value={c.problems.length} />
+        <StatCard label="Your score" value={c.isRegistered ? `${c.myScore ?? 0}%` : "—"} hint={c.isRegistered ? `${solved.size} solved` : "Not registered"} />
+      </div>
 
-          <div className="mt-6 grid gap-4 md:grid-cols-4">
-            <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-              <div className="text-xs text-foreground/60">Starts</div>
-              <div className="mt-2 text-sm font-medium">{new Date(contest.startDate).toLocaleString()}</div>
-            </div>
-            <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-              <div className="text-xs text-foreground/60">Ends</div>
-              <div className="mt-2 text-sm font-medium">{new Date(contest.endDate).toLocaleString()}</div>
-            </div>
-            <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-              <div className="text-xs text-foreground/60">Participants</div>
-              <div className="mt-2 text-sm font-medium">{contest.participantCount}</div>
-            </div>
-            <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-4">
-              <div className="text-xs text-foreground/60">Your Status</div>
-              <div className="mt-2 text-sm font-medium">{contest.isRegistered ? "Registered" : "Not Registered"}</div>
-            </div>
-          </div>
-
-          {contest.rules && (
-            <div className="mt-6 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-6">
-              <h2 className="font-semibold">Contest Rules</h2>
-              <p className="mt-2 text-sm text-foreground/70 whitespace-pre-wrap">{contest.rules}</p>
-            </div>
-          )}
-
-          {contest.problems && contest.problems.length > 0 && (
-            <div className="mt-6 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-6">
-              <h2 className="font-semibold mb-4">Problems ({contest.problems.length})</h2>
-              <div className="space-y-3">
-                {contest.problems.map((problem: any, idx: number) => (
-                  <div key={idx} className="flex items-center justify-between p-4 rounded-lg border border-foreground/10 bg-background hover:bg-foreground/[0.02] transition">
-                    <div className="flex-1">
-                      <div className="font-medium text-foreground">{idx + 1}. {problem.title}</div>
-                      <div className="mt-1 flex items-center gap-3 text-xs text-foreground/70">
-                        <span className={`px-2 py-1 rounded ${
-                          problem.difficulty === 'Easy' ? 'bg-green-600/20 text-green-600' :
-                          problem.difficulty === 'Medium' ? 'bg-yellow-600/20 text-yellow-600' :
-                          'bg-red-600/20 text-red-600'
-                        }`}>
-                          {problem.difficulty}
-                        </span>
-                        {problem.topics && problem.topics.length > 0 && (
-                          <span>{problem.topics.join(', ')}</span>
-                        )}
+      <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+        <div className="grid content-start gap-6">
+          <Card>
+            <CardHeader title="Problems" icon={<CodeXml className="size-4" />} />
+            {c.problems.length === 0 ? (
+              <CardBody><p className="text-sm text-muted">This contest has no problems yet.</p></CardBody>
+            ) : (
+              <ul className="divide-y divide-border">
+                {c.problems.map((p, idx) => (
+                  <li key={idx} className="flex items-center justify-between gap-3 px-5 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-text">
+                        {idx + 1}. {p.title}
+                      </p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <Badge tone={p.difficulty === "Easy" ? "success" : p.difficulty === "Medium" ? "warning" : "error"}>{p.difficulty}</Badge>
+                        {solved.has(idx) ? <Badge tone="success" icon={<CircleCheck className="size-3" aria-hidden />}>Solved</Badge> : null}
                       </div>
                     </div>
-                    {isActive && (
-                      <Link
-                        href={`/contests/challenge?contestId=${id}&problemIndex=${idx}`}
-                        className="ml-4 inline-flex h-9 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700"
-                      >
-                        Solve
-                      </Link>
-                    )}
-                  </div>
+                    {canSolve ? (
+                      <ButtonLink href={`/contests/challenge?contestId=${encodeURIComponent(id)}&problemIndex=${idx}`} size="sm" variant={solved.has(idx) ? "secondary" : "primary"}>
+                        {solved.has(idx) ? "Revisit" : "Solve"}
+                      </ButtonLink>
+                    ) : null}
+                  </li>
                 ))}
-              </div>
-            </div>
-          )}
+              </ul>
+            )}
+          </Card>
+          {c.rules ? (
+            <Card>
+              <CardHeader title="Rules" />
+              <CardBody><p className="whitespace-pre-wrap text-sm leading-6 text-text">{c.rules}</p></CardBody>
+            </Card>
+          ) : null}
         </div>
 
-        <div className="mt-8 rounded-3xl border border-foreground/10 bg-background p-6 md:p-8">
-          <h2 className="text-2xl font-semibold">Leaderboard</h2>
-
-          {leaderboard.length === 0 ? (
-            <div className="mt-4 text-center text-sm text-foreground/70">No participants yet</div>
-          ) : (
+        <Card>
+          <CardHeader title="Leaderboard" description="Score = share of problems solved; ties go to whoever got there first." icon={<Trophy className="size-4" />} />
+          {board.loading ? <CardBody><LoadingState rows={2} /></CardBody> : null}
+          {board.error ? <CardBody><ErrorState description={board.error} onRetry={board.reload} /></CardBody> : null}
+          {board.data && board.data.leaderboard.length === 0 ? (
+            <CardBody><EmptyState title="No participants yet" /></CardBody>
+          ) : null}
+          {board.data && board.data.leaderboard.length > 0 ? (
             <>
-              <div className="mt-4 overflow-hidden rounded-xl border border-foreground/10 bg-background">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-foreground/[0.03] text-foreground/80">
-                    <tr>
-                      <th className="px-4 py-3 font-medium">Rank</th>
-                      <th className="px-4 py-3 font-medium">Username</th>
-                      <th className="px-4 py-3 font-medium">Score</th>
-                      <th className="px-4 py-3 font-medium">Rating</th>
-                      <th className="px-4 py-3 font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {leaderboard.map((entry) => (
-                      <tr key={entry.rank} className="border-t border-foreground/10 hover:bg-foreground/[0.03]">
-                        <td className="px-4 py-3 font-medium">#{entry.rank}</td>
-                        <td className="px-4 py-3">{entry.username}</td>
-                        <td className="px-4 py-3">{entry.score.toFixed(1)}</td>
-                        <td className="px-4 py-3 font-semibold text-blue-600">{entry.rating}</td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-medium ${
-                              entry.status === "completed"
-                                ? "bg-green-500/20 text-green-600"
-                                : "bg-yellow-500/20 text-yellow-600"
-                            }`}
-                          >
-                            {entry.status === "completed" ? "Completed" : "In Progress"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {totalPages > 1 && (
-                <div className="mt-4 flex items-center justify-between">
-                  <div className="text-sm text-foreground/70">Page {page} of {totalPages}</div>
+              <ol className="divide-y divide-border">
+                {board.data.leaderboard.map((e) => (
+                  <li key={e.userId} className={cn("flex items-center justify-between gap-3 px-5 py-2.5 text-sm", e.isMe && "bg-accent/40")}>
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className="w-8 shrink-0 font-semibold tabular-nums text-muted">#{e.rank}</span>
+                      <span className="truncate font-medium text-text">
+                        {e.username}
+                        {e.isMe ? <span className="ml-1.5 text-xs text-muted">(you)</span> : null}
+                      </span>
+                    </span>
+                    <span className="shrink-0 tabular-nums text-text">
+                      <span className="font-semibold">{e.score}%</span>
+                      <span className="ml-2 text-xs text-muted">{e.solvedCount} solved</span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              {board.data.totalPages > 1 ? (
+                <CardBody className="flex items-center justify-between border-t border-border text-sm">
+                  <span className="text-muted">Page {page} of {board.data.totalPages}</span>
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => setPage(Math.max(1, page - 1))}
-                      disabled={page <= 1}
-                      className="inline-flex h-9 items-center justify-center rounded-full border border-foreground/10 px-3 text-sm disabled:opacity-50"
-                    >
-                      Previous
-                    </button>
-                    <button
-                      onClick={() => setPage(Math.min(totalPages, page + 1))}
-                      disabled={page >= totalPages}
-                      className="inline-flex h-9 items-center justify-center rounded-full border border-foreground/10 px-3 text-sm disabled:opacity-50"
-                    >
-                      Next
-                    </button>
+                    <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} icon={<ChevronLeft className="size-4" aria-hidden />}>Previous</Button>
+                    <Button size="sm" variant="secondary" disabled={page >= board.data.totalPages} onClick={() => setPage((p) => p + 1)} className="flex-row-reverse" icon={<ChevronRight className="size-4" aria-hidden />}>Next</Button>
                   </div>
-                </div>
-              )}
+                </CardBody>
+              ) : null}
             </>
-          )}
-        </div>
-      </main>
-    </div>
+          ) : null}
+        </Card>
+      </div>
+      <p className="mt-6 text-sm text-muted">
+        <Link href="/contests" className="underline underline-offset-2 hover:text-text">All contests</Link>
+      </p>
+    </PageContainer>
   );
 }

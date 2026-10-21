@@ -1,7 +1,8 @@
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
+import { parseDifficulty, parseInterviewType } from "@/lib/interviewFlow";
 
 function allowAnonymousInterviews() {
   return process.env.ALLOW_ANON_INTERVIEWS === "true" || process.env.NODE_ENV !== "production";
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
   const db = await getDb();
   if (!db) {
     return Response.json(
-      { ok: false, error: "Database is not configured." },
+      { ok: false, error: dbUnavailableMessage() },
       { status: 503 },
     );
   }
@@ -52,8 +53,8 @@ export async function POST(request: Request) {
 
   const role = clampString(body?.role?.trim() || "Software Engineer", 120);
   const experience = clampString(body?.experience?.trim() || "0-2 years", 40);
-  const type = clampString(body?.type?.trim() || "Mixed", 40);
-  const difficulty = clampString(body?.difficulty?.trim() || "Adaptive", 24);
+  const type = parseInterviewType(body?.type, "Mixed");
+  const difficulty = parseDifficulty(body?.difficulty, "Adaptive");
   const company = clampString(body?.company?.trim() || "", 80);
   const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
   const interactionMode = body?.interactionMode === "video" ? "video" : "typing";

@@ -256,7 +256,7 @@ export function evaluationUserPrompt(params: {
     params.experience?.trim() ? `Experience Level: ${params.experience.trim()}` : "",
     params.company?.trim() ? `Target Company: ${params.company.trim()}` : "",
     params.focusAreas?.trim() ? `Focus Areas: ${params.focusAreas.trim()}` : "",
-    params.resumeContext?.trim() ? `Candidate Resume Context (skills/projects): ${params.resumeContext.trim().slice(0, 2500)}` : "",
+    params.resumeContext?.trim() ? `Candidate Resume Context (skills/projects): ${params.resumeContext.trim().slice(0, 3500)}` : "",
     `Question: ${params.question}`,
     `Candidate Answer: ${params.answer}`,
     "",

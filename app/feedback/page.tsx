@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import FeedbackClient from "./FeedbackClient";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Feedback" };
 
 export default async function FeedbackPage() {
   const user = await getCurrentUser();

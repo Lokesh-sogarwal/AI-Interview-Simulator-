@@ -1,5 +1,5 @@
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { getGlobalLeaderboard, getUserRank } from "@/app/lib/ranking-calculator";
 
 export async function GET(request: Request) {
@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   if (!user) return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
   const db = await getDb();
-  if (!db) return Response.json({ ok: false, error: "Database not available" }, { status: 500 });
+  if (!db) return Response.json({ ok: false, error: dbUnavailableMessage() }, { status: 500 });
 
   try {
     const url = new URL(request.url);

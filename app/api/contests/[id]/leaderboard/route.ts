@@ -1,80 +1,67 @@
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
-import { ObjectId } from "mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
+import { toObjectId } from "@/lib/http";
+import { displayName } from "@/lib/contests";
+
+const PAGE_SIZE = 10;
 
 export async function GET(request: Request, props: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
   const db = await getDb();
-  if (!db) return Response.json({ ok: false, error: "Database not available" }, { status: 500 });
+  if (!db) return Response.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
 
   try {
     const { id } = await props.params;
     const url = new URL(request.url);
-    const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
-    const pageSize = 10;
-    const skip = (page - 1) * pageSize;
+    const page = Math.min(1000, Math.max(1, Math.floor(Number(url.searchParams.get("page")) || 1)));
+    const skip = (page - 1) * PAGE_SIZE;
 
-    if (!ObjectId.isValid(id)) {
+    const contestId = toObjectId(id);
+    if (!contestId) {
       return Response.json({ ok: false, error: "Invalid contest ID" }, { status: 400 });
     }
 
-    // Get registrations with user info
+    // Rank by score, then by who reached it first.
     const registrations = await db
       .collection("contest_registrations")
       .aggregate([
-        { $match: { contestId: new ObjectId(id) } },
-        { $sort: { score: -1, registeredAt: 1 } },
+        { $match: { contestId } },
+        { $sort: { score: -1, updatedAt: 1, registeredAt: 1 } },
         { $skip: skip },
-        { $limit: pageSize },
+        { $limit: PAGE_SIZE },
         {
           $lookup: {
             from: "users",
-            localField: "userId",
-            foreignField: "id",
+            let: { uid: { $convert: { input: "$userId", to: "objectId", onError: null, onNull: null } } },
+            pipeline: [{ $match: { $expr: { $eq: ["$_id", "$$uid"] } } }, { $project: { name: 1, email: 1 } }],
             as: "user",
           },
         },
       ])
       .toArray();
 
-    const total = await db.collection("contest_registrations").countDocuments({
-      contestId: new ObjectId(id),
-    });
+    const total = await db.collection("contest_registrations").countDocuments({ contestId });
 
-    // Calculate ratings
-    const leaderboard = registrations
-      .map((reg, index) => {
-        const baseRating = 1200; // Base rating
-        const scoreBonus = (reg.score || 0) * 10; // Points from score
-        const performanceBonus = (index + 1) <= 10 ? (11 - (index + 1)) * 5 : 0; // Ranking bonus
-        const rating = baseRating + scoreBonus + performanceBonus;
-
-        return {
-          rank: skip + index + 1,
-          userId: reg.userId,
-          username: reg.user?.[0]?.email?.split("@")[0] || "Anonymous",
-          email: reg.user?.[0]?.email || "N/A",
-          score: reg.score || 0,
-          rating: Math.round(rating),
-          registeredAt: reg.registeredAt,
-          status: reg.status,
-          globalRating: reg.user?.[0]?.rating || 1200, // Global ELO rating
-          interviewsCompleted: reg.user?.[0]?.contestsCompleted || 0,
-        };
-      })
-      .filter((item) => item.username);
-
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const leaderboard = registrations.map((reg, index) => ({
+      rank: skip + index + 1,
+      userId: reg.userId,
+      username: displayName(reg.user?.[0]),
+      isMe: reg.userId === user.id,
+      score: reg.score || 0,
+      solvedCount: reg.solvedCount || 0,
+      registeredAt: reg.registeredAt,
+      status: reg.status,
+    }));
 
     return Response.json({
       ok: true,
       leaderboard,
       total,
       page,
-      totalPages,
-      pageSize,
+      totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
+      pageSize: PAGE_SIZE,
     });
   } catch (error) {
     console.error("Error fetching leaderboard:", error);

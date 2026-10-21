@@ -1,4 +1,5 @@
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, isAdminInDb } from "@/lib/auth";
+import { getDb } from "@/lib/mongodb";
 import { NextResponse } from "next/server";
 
 export async function GET() {
@@ -12,13 +13,17 @@ export async function GET() {
       );
     }
 
+    // Reflect the current admin flag from the database, not the (possibly stale) token.
+    const db = await getDb();
+    const isAdmin = db ? await isAdminInDb(db, user.id) : false;
+
     return NextResponse.json({
       ok: true,
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
-        isAdmin: user.isAdmin || false,
+        isAdmin,
       },
     });
   } catch (error) {

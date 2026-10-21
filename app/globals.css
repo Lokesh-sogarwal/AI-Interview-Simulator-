@@ -1,78 +1,133 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * Design tokens. The four brand colours are the foundation; white surfaces and
+ * the status colours supplement them. Tailwind emits every token below as a
+ * CSS custom property on :root (e.g. --color-primary) and generates matching
+ * utilities (bg-primary, text-muted, rounded-card, shadow-overlay, ...).
+ */
+@theme static {
+  --color-primary: #30364f;
+  --color-primary-hover: #252a3e;
+  --color-on-primary: #f0f0db;
+  --color-secondary: #acbac4;
+  --color-accent: #e1d9bc;
+  --color-background: #f0f0db;
+
+  --color-surface: #ffffff;
+  --color-surface-muted: #f7f7ec;
+  --color-text: #30364f;
+  --color-text-muted: #596174;
+  --color-muted: var(--color-text-muted);
+  --color-border: #d7d9d1;
+  --color-border-strong: #acbac4;
+  /* Legacy alias still used by a few class names. */
+  --color-foreground: var(--color-text);
+
+  --color-success: #28734a;
+  --color-success-soft: #e4f1e8;
+  --color-warning: #946200;
+  --color-warning-soft: #f6eed6;
+  --color-error: #b42332;
+  --color-error-soft: #f8e4e6;
+
+  --radius-control: 0.625rem;
+  --radius-card: 1rem;
+  --shadow-card: 0 1px 2px rgb(48 54 79 / 0.06), 0 1px 1px rgb(48 54 79 / 0.04);
+  --shadow-overlay: 0 12px 32px rgb(48 54 79 / 0.18);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
 }
 
-.aisim-3d-scene {
-  perspective: 1000px;
-  transform-style: preserve-3d;
+::selection {
+  background: var(--color-accent);
+  color: var(--color-primary);
 }
 
-.aisim-3d-card {
-  transform: translateZ(0);
-  transform-style: preserve-3d;
+/* One consistent, clearly visible keyboard focus indicator. */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
-.aisim-hero-glow {
-  background:
-    radial-gradient(
-      900px 450px at 20% 15%,
-      color-mix(in srgb, var(--foreground) 12%, transparent),
-      transparent 60%
-    ),
-    radial-gradient(
-      700px 420px at 80% 35%,
-      color-mix(in srgb, var(--foreground) 9%, transparent),
-      transparent 60%
-    );
-  filter: blur(1px);
-  opacity: 0.85;
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 100;
+  padding: 0.5rem 0.875rem;
+  border-radius: var(--radius-control);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.skip-link:focus {
+  top: 1rem;
 }
 
-@keyframes aisim-float {
+@keyframes ui-shimmer {
   0% {
-    transform: translateY(0px);
-  }
-  50% {
-    transform: translateY(-6px);
+    background-position: -200% 0;
   }
   100% {
-    transform: translateY(0px);
+    background-position: 200% 0;
   }
 }
 
-.aisim-float {
-  animation: aisim-float 3.6s ease-in-out infinite;
+.ui-skeleton {
+  background: linear-gradient(90deg, var(--color-surface-muted) 25%, #ebebdd 50%, var(--color-surface-muted) 75%);
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.6s ease-in-out infinite;
 }
 
-@keyframes aisim-spin {
+@keyframes ui-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
-.aisim-spin {
-  animation: aisim-spin 1.2s linear infinite;
+.ui-spin {
+  animation: ui-spin 0.9s linear infinite;
+}
+
+@keyframes ui-pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ui-pulse {
+  animation: ui-pulse-dot 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

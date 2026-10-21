@@ -2,16 +2,20 @@ import { ObjectId } from "mongodb";
 
 import { getCurrentUser } from "@/lib/auth";
 import { llmText } from "@/lib/llm";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import {
   compactQuestion,
   detectLanguageHint,
+  isClosedStatus,
+  parseDifficulty,
+  parseInterviewType,
   stageForQuestionNumber,
   statefulQuestionSystemPrompt,
   statefulQuestionUserPrompt,
 } from "@/lib/interviewFlow";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
+import { loadOwnResume } from "@/lib/resumeStore";
 import type { Difficulty, InterviewType } from "@/lib/prompts";
 
 const INTRO_QUESTION = "Tell me about yourself.";
@@ -28,6 +32,7 @@ type StartInterviewBody = {
   useResume?: boolean;
   resumeText?: string;
   resumeProfile?: unknown;
+  resumeId?: string;
 };
 
 function safeObjectId(id: string) {
@@ -54,15 +59,15 @@ export async function POST(request: Request) {
   const db = await getDb();
   if (!db) {
     return Response.json(
-      { ok: false, error: "Database is not configured." },
+      { ok: false, error: dbUnavailableMessage() },
       { status: 503 },
     );
   }
 
   const body = (await request.json().catch(() => null)) as StartInterviewBody | null;
 
-  const type = (body?.type || "HR") as InterviewType;
-  const difficulty = (body?.difficulty || "Medium") as Difficulty;
+  const type: InterviewType = parseInterviewType(body?.type, "Mixed");
+  const difficulty: Difficulty = parseDifficulty(body?.difficulty, "Adaptive");
   const role = clampString(String(body?.role || "Software Engineer").trim() || "Software Engineer", 120);
   const experience = clampString(String(body?.experience || "0-2 years").trim() || "0-2 years", 40);
   const company = clampString(String(body?.company || "").trim(), 80);
@@ -73,6 +78,9 @@ export async function POST(request: Request) {
   const resumeProfileString = useResume && body?.resumeProfile ? clampString(JSON.stringify(body.resumeProfile), 12000) : "";
 
   const resumeContext = (resumeProfileString || resumeText).trim();
+  // Link a stored resume only if it belongs to this user.
+  const ownResume = useResume && body?.resumeId ? await loadOwnResume(db, user.id, body.resumeId) : null;
+  const resumeId = ownResume ? String(ownResume._id) : null;
 
   const now = new Date();
   const requestedId = typeof body?.interviewId === "string" ? body.interviewId.trim() : "";
@@ -87,6 +95,37 @@ export async function POST(request: Request) {
     }
     if (String(interview.userId || "") !== String(user.id)) {
       return Response.json({ ok: false, error: "Forbidden" }, { status: 403 });
+    }
+    if (isClosedStatus(interview.status)) {
+      return Response.json(
+        { ok: false, code: "interview_closed", error: "This interview has already ended. Start a new one from setup." },
+        { status: 409 },
+      );
+    }
+
+    // Resuming after a refresh: keep the transcript and live state intact and
+    // let the client continue with the next question.
+    const existingTurns = Array.isArray(interview.turns) ? interview.turns : [];
+    if (interview.status === "in_progress" && existingTurns.length > 0) {
+      return Response.json({
+        ok: true,
+        interviewId: requestedId,
+        resumed: true,
+        turns: existingTurns.map((t: { question?: unknown; answer?: unknown; evaluation?: unknown; star?: unknown }) => ({
+          question: String(t?.question ?? ""),
+          answer: String(t?.answer ?? ""),
+          evaluation: t?.evaluation ?? null,
+          star: t?.star ?? undefined,
+        })),
+        config: {
+          type: parseInterviewType(interview.type, type),
+          difficulty: parseDifficulty(interview.difficulty, difficulty),
+          role: String(interview.role || role),
+          experience: String(interview.experience || experience),
+          company: String(interview.company ?? company),
+          focusAreas: String(interview.focusAreas ?? focusAreas),
+        },
+      });
     }
 
     // Enforce scheduled start time server-side as well.
@@ -120,6 +159,7 @@ export async function POST(request: Request) {
           interactionMode,
           useResume,
           ...(resumeText ? { resumeText } : {}),
+          ...(resumeId ? { resumeId } : {}),
           ...(resumeProfileString ? { resumeProfile: body?.resumeProfile } : {}),
           status: "in_progress",
           startedAt: now,
@@ -148,6 +188,7 @@ export async function POST(request: Request) {
       interactionMode,
       useResume,
       resumeText: resumeText || null,
+      resumeId,
       resumeProfile: body?.resumeProfile ?? null,
       turns: [],
       status: "in_progress",

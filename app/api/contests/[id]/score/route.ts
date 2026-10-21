@@ -1,76 +1,39 @@
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
-import { ObjectId } from "mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
+import { toObjectId } from "@/lib/http";
+import { recomputeRegistrationScore } from "@/lib/contests";
 
+/**
+ * Recomputes the caller's contest score from their server-judged submissions.
+ * Scores sent by the client are ignored: they used to be trusted, which let
+ * anyone post an arbitrary score.
+ */
 export async function POST(request: Request, props: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
   const db = await getDb();
-  if (!db) return Response.json({ ok: false, error: "Database not available" }, { status: 500 });
+  if (!db) return Response.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
 
   try {
     const { id } = await props.params;
-    const body = await request.json();
-    const { score, interviewId } = body;
-
-    if (!ObjectId.isValid(id)) {
+    const contestId = toObjectId(id);
+    if (!contestId) {
       return Response.json({ ok: false, error: "Invalid contest ID" }, { status: 400 });
     }
 
-    if (typeof score !== "number" || score < 0 || score > 100) {
-      return Response.json({ ok: false, error: "Invalid score" }, { status: 400 });
-    }
+    const [contest, registration] = await Promise.all([
+      db.collection("contests").findOne({ _id: contestId }),
+      db.collection("contest_registrations").findOne({ userId: user.id, contestId }),
+    ]);
+    if (!contest) return Response.json({ ok: false, error: "Contest not found" }, { status: 404 });
+    if (!registration) return Response.json({ ok: false, error: "Registration not found" }, { status: 404 });
 
-    // Update registration with score
-    const result = await db.collection("contest_registrations").updateOne(
-      { userId: user.id, contestId: new ObjectId(id) },
-      {
-        $set: {
-          score,
-          status: "completed",
-          completedAt: new Date(),
-          interviewId: interviewId || null,
-        },
-      },
-    );
+    const result = await recomputeRegistrationScore(db, contest as typeof contest & { _id: typeof contestId }, user.id);
+    const rank =
+      (await db.collection("contest_registrations").countDocuments({ contestId, score: { $gt: result.score } })) + 1;
 
-    if (result.matchedCount === 0) {
-      return Response.json({ ok: false, error: "Registration not found" }, { status: 404 });
-    }
-
-    // Calculate user's rating
-    const registration = await db.collection("contest_registrations").findOne({
-      userId: user.id,
-      contestId: new ObjectId(id),
-    });
-
-    // Get user's rank
-    const rank = await db.collection("contest_registrations").countDocuments({
-      contestId: new ObjectId(id),
-      score: { $gt: score },
-    });
-
-    const baseRating = 1200;
-    const scoreBonus = score * 10;
-    const performanceBonus = Math.max(0, (100 - rank) * 5);
-    const rating = Math.round(baseRating + scoreBonus + performanceBonus);
-
-    // Update user's overall rating
-    await db.collection("users").updateOne(
-      { id: user.id },
-      {
-        $set: { rating: rating },
-        $inc: { contestsCompleted: 1 },
-      },
-    );
-
-    return Response.json({
-      ok: true,
-      rating,
-      rank: rank + 1,
-      message: "Score recorded successfully",
-    });
+    return Response.json({ ok: true, ...result, rank, message: "Score recalculated from your submissions" });
   } catch (error) {
     console.error("Error recording contest score:", error);
     return Response.json({ ok: false, error: "Failed to record score" }, { status: 500 });

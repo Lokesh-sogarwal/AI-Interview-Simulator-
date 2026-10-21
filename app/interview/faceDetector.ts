@@ -80,10 +80,10 @@ export async function createFaceDetector(): Promise<FaceDetectorApi | null> {
           return [];
         }
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const detections: any[] = (result as any)?.detections ?? [];
+        type Detection = { boundingBox?: { originX?: number; originY?: number; width?: number; height?: number } };
+        const detections: Detection[] = (result as { detections?: Detection[] } | null)?.detections ?? [];
         const boxes = detections
-          .map((d: any) => {
+          .map((d) => {
             const bb = d.boundingBox;
             if (!bb) return null;
             return {

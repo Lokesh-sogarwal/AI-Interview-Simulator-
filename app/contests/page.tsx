@@ -1,231 +1,155 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import PageHeader from "../components/PageHeader";
+import { useMemo, useState } from "react";
+import { CalendarClock, CodeXml, Medal, Users } from "lucide-react";
 
-interface Contest {
+import { Alert, Badge, Button, ButtonLink, Card, CardBody, EmptyState, ErrorState, LoadingState, PageContainer, PageHeader, Tabs } from "@/app/components/ui";
+import { formatDateTime } from "@/app/lib/format";
+import { postJson, useApi } from "@/app/lib/useApi";
+
+type Contest = {
   _id: string;
   name: string;
-  description: string;
+  description?: string;
   startDate: string;
   endDate: string;
   isRegistered: boolean;
   participantCount: number;
-  maxParticipants: number;
-  type?: "coding" | "general";
-  frequency?: "weekly" | "biweekly";
+  maxParticipants?: number;
+  problems: Array<{ title: string; difficulty: string }>;
   problemCount?: number;
-  problems?: Array<{ title: string; difficulty: string }>;
+  frequency?: string;
+};
+
+type Phase = "active" | "upcoming" | "ended";
+
+function phaseOf(c: Contest, now: number): Phase {
+  if (now < Date.parse(c.startDate)) return "upcoming";
+  if (now > Date.parse(c.endDate)) return "ended";
+  return "active";
 }
 
+const PHASE_LABEL: Record<Phase, string> = { active: "Live", upcoming: "Upcoming", ended: "Ended" };
+const PHASE_TONE = { active: "success", upcoming: "info", ended: "neutral" } as const;
+
 export default function ContestsPage() {
-  const router = useRouter();
-  const [contests, setContests] = useState<Contest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, error, loading, reload } = useApi<{ contests: Contest[] }>("/api/contests");
+  const [filter, setFilter] = useState<"all" | Phase>("all");
   const [registering, setRegistering] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const [now] = useState(() => Date.now());
 
-  useEffect(() => {
-    const fetchContests = async () => {
-      try {
-        const res = await fetch("/api/contests");
-        const data = await res.json();
-        if (data.ok) {
-          setContests(data.contests);
-        } else {
-          setError(data.error || "Failed to load contests");
-        }
-      } catch (err) {
-        setError("Failed to load contests");
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
+  const contests = useMemo(() => data?.contests ?? [], [data]);
+  const counts = useMemo(() => {
+    const c = { all: contests.length, active: 0, upcoming: 0, ended: 0 };
+    contests.forEach((x) => (c[phaseOf(x, now)] += 1));
+    return c;
+  }, [contests, now]);
+  const visible = contests.filter((c) => filter === "all" || phaseOf(c, now) === filter);
 
-    fetchContests();
-  }, []);
-
-  const handleRegister = async (contestId: string) => {
-    setRegistering(contestId);
+  async function register(id: string) {
+    setRegistering(id);
+    setMessage(null);
     try {
-      const res = await fetch(`/api/contests/${contestId}/register`, { method: "POST" });
-      const data = await res.json();
-
-      if (data.ok) {
-        setContests(
-          contests.map((c) => (c._id === contestId ? { ...c, isRegistered: true, participantCount: c.participantCount + 1 } : c)),
-        );
-        setError(null);
-      } else {
-        setError(data.error || "Failed to register");
-      }
-    } catch (err) {
-      setError("Failed to register for contest");
-      console.error(err);
+      const res = await postJson(`/api/contests/${id}/register`, {});
+      setMessage(res.ok ? { tone: "success", text: "You’re registered." } : { tone: "error", text: res.data?.error || "Registration failed." });
+      if (res.ok) reload();
+    } catch {
+      setMessage({ tone: "error", text: "Could not reach the server." });
     } finally {
       setRegistering(null);
     }
-  };
-
-  const getContestStatus = (startDate: string, endDate: string, isRegistered: boolean) => {
-    const now = new Date();
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
-    if (now < start) return "Upcoming";
-    if (now > end) return "Ended";
-    if (isRegistered) return "Active";
-    return "Ongoing";
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background text-foreground p-6">
-        <div className="mx-auto max-w-6xl">
-          <p className="text-center text-foreground/70">Loading contests...</p>
-        </div>
-      </div>
-    );
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <PageHeader 
-        title="Contests" 
-        subtitle="Register and compete with others"
-        showProfile={true}
+    <PageContainer>
+      <PageHeader
+        title="Coding contests"
+        description="Register, solve problems in Python, JavaScript, C++ or Java, and climb the contest leaderboard."
+        actions={<ButtonLink href="/ratings" variant="secondary">Your rating</ButtonLink>}
       />
 
-      <main className="mx-auto w-full max-w-6xl px-6 pb-16">
-        {error && (
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-600 mb-4">
-            {error}
-          </div>
-        )}
+      <Tabs
+        label="Filter contests"
+        value={filter}
+        onChange={setFilter}
+        className="mb-4"
+        tabs={[
+          { value: "all", label: "All", count: counts.all },
+          { value: "active", label: "Live", count: counts.active },
+          { value: "upcoming", label: "Upcoming", count: counts.upcoming },
+          { value: "ended", label: "Ended", count: counts.ended },
+        ]}
+      />
+      {message ? <Alert tone={message.tone} className="mb-4">{message.text}</Alert> : null}
+      {loading ? <LoadingState label="Loading contests…" /> : null}
+      {error ? <ErrorState description={error} onRetry={reload} /> : null}
+      {!loading && !error && visible.length === 0 ? (
+        <EmptyState icon={<Medal className="size-5" />} title={contests.length ? "No contests in this view" : "No contests yet"} description={contests.length ? undefined : "New contests will appear here when an admin creates them."} />
+      ) : null}
 
-        {contests.length === 0 ? (
-          <div className="rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-8 text-center">
-            <div className="text-sm text-foreground/70">No contests available yet</div>
-          </div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2">
-            {contests.map((contest) => {
-              const status = getContestStatus(contest.startDate, contest.endDate, contest.isRegistered);
-              const isFull = contest.participantCount >= contest.maxParticipants;
-
-              return (
-                <div key={contest._id} className="rounded-2xl border border-foreground/10 bg-background p-6 hover:border-foreground/20 transition-all">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="flex items-start gap-3">
-                        <div>
-                          <h3 className="text-lg font-semibold">{contest.name}</h3>
-                          <div className="mt-2 flex gap-2">
-                            {contest.type === "coding" && (
-                              <span className="inline-flex items-center rounded-full bg-blue-500/20 px-2 py-1 text-xs font-medium text-blue-600">
-                                💻 Coding
-                              </span>
-                            )}
-                            {contest.frequency && (
-                              <span className="inline-flex items-center rounded-full bg-purple-500/20 px-2 py-1 text-xs font-medium text-purple-600">
-                                📅 {contest.frequency.charAt(0).toUpperCase() + contest.frequency.slice(1)}
-                              </span>
-                            )}
-                            {contest.problemCount && (
-                              <span className="inline-flex items-center rounded-full bg-green-500/20 px-2 py-1 text-xs font-medium text-green-600">
-                                🎯 {contest.problemCount} problems
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <p className="mt-3 text-sm text-foreground/70">{contest.description}</p>
-
-                      <div className="mt-4 grid gap-2 text-sm">
-                        <div>
-                          <span className="font-medium">Starts:</span> {new Date(contest.startDate).toLocaleString()}
-                        </div>
-                        <div>
-                          <span className="font-medium">Ends:</span> {new Date(contest.endDate).toLocaleString()}
-                        </div>
-                        <div>
-                          <span className="font-medium">Participants:</span> {contest.participantCount} / {contest.maxParticipants}
-                        </div>
-                      </div>
-
-                      {contest.problems && contest.problems.length > 0 && (
-                        <div className="mt-4 pt-4 border-t border-foreground/10">
-                          <p className="text-xs font-medium text-foreground/70 mb-2">Problems:</p>
-                          <div className="flex flex-wrap gap-2">
-                            {contest.problems.slice(0, 3).map((problem, idx) => (
-                              <div key={idx} className="text-xs px-2 py-1 rounded bg-foreground/5 border border-foreground/10">
-                                <div className="font-medium truncate">{problem.title}</div>
-                                <div className="text-foreground/60">{problem.difficulty}</div>
-                              </div>
-                            ))}
-                            {contest.problems.length > 3 && (
-                              <div className="text-xs px-2 py-1 rounded bg-foreground/5 border border-foreground/10 font-medium text-foreground/60">
-                                +{contest.problems.length - 3} more
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
+      <ul className="grid gap-4 md:grid-cols-2">
+        {visible.map((c) => {
+          const phase = phaseOf(c, now);
+          const full = typeof c.maxParticipants === "number" && c.participantCount >= c.maxParticipants;
+          const count = c.problems.length || c.problemCount || 0;
+          return (
+            <li key={c._id}>
+              <Card className="flex h-full flex-col">
+                <CardBody className="grid flex-1 gap-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <h2 className="text-base font-semibold text-text">
+                      <Link href={`/contests/${c._id}`} className="hover:underline">
+                        {c.name}
+                      </Link>
+                    </h2>
+                    <Badge tone={PHASE_TONE[phase]}>{PHASE_LABEL[phase]}</Badge>
+                  </div>
+                  {c.description ? <p className="line-clamp-2 text-sm text-muted">{c.description}</p> : null}
+                  <dl className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="flex items-center gap-1.5 text-muted">
+                      <CalendarClock className="size-3.5" aria-hidden />
+                      <dt className="sr-only">Starts</dt>
+                      <dd>{formatDateTime(c.startDate)}</dd>
                     </div>
-
-                    <div className="flex flex-col items-end gap-2">
-                      <span
-                        className={`inline-flex items-center justify-center rounded-full px-3 py-1 text-xs font-medium ${
-                          status === "Upcoming"
-                            ? "bg-blue-500/20 text-blue-600"
-                            : status === "Active"
-                              ? "bg-green-500/20 text-green-600"
-                              : status === "Ended"
-                                ? "bg-gray-500/20 text-gray-600"
-                                : "bg-yellow-500/20 text-yellow-600"
-                        }`}
-                      >
-                        {status}
-                      </span>
-
-                      {!contest.isRegistered && isFull && (
-                        <button
-                          disabled
-                          className="inline-flex h-9 items-center justify-center rounded-full border border-foreground/15 px-4 text-xs font-medium opacity-50 cursor-not-allowed"
-                        >
-                          Full
-                        </button>
-                      )}
-
-                      {!contest.isRegistered && !isFull && (
-                        <button
-                          onClick={() => handleRegister(contest._id)}
-                          disabled={registering === contest._id}
-                          className="inline-flex h-9 items-center justify-center rounded-full bg-foreground px-4 text-xs font-medium text-background hover:opacity-90 disabled:opacity-60"
-                        >
-                          {registering === contest._id ? "Registering..." : "Register"}
-                        </button>
-                      )}
-
-                      {contest.isRegistered && (
-                        <Link
-                          href={`/contests/${contest._id}`}
-                          className="inline-flex h-9 items-center justify-center rounded-full border border-foreground/15 px-4 text-xs font-medium hover:bg-foreground/5"
-                        >
-                          View Details
-                        </Link>
-                      )}
+                    <div className="flex items-center gap-1.5 text-muted">
+                      <Users className="size-3.5" aria-hidden />
+                      <dt className="sr-only">Participants</dt>
+                      <dd>
+                        {c.participantCount}
+                        {c.maxParticipants ? ` / ${c.maxParticipants}` : ""} registered
+                      </dd>
                     </div>
+                    <div className="flex items-center gap-1.5 text-muted">
+                      <CodeXml className="size-3.5" aria-hidden />
+                      <dt className="sr-only">Problems</dt>
+                      <dd>{count} problem{count === 1 ? "" : "s"}</dd>
+                    </div>
+                    <div className="text-muted">
+                      <dt className="sr-only">Ends</dt>
+                      <dd>Ends {formatDateTime(c.endDate)}</dd>
+                    </div>
+                  </dl>
+                </CardBody>
+                <div className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
+                  {c.isRegistered ? <Badge tone="success">Registered</Badge> : <span />}
+                  <div className="flex gap-2">
+                    <ButtonLink href={`/contests/${c._id}`} variant="secondary" size="sm">
+                      Details
+                    </ButtonLink>
+                    {!c.isRegistered && phase !== "ended" ? (
+                      <Button size="sm" disabled={full} loading={registering === c._id} onClick={() => register(c._id)}>
+                        {full ? "Full" : "Register"}
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </main>
-    </div>
+              </Card>
+            </li>
+          );
+        })}
+      </ul>
+    </PageContainer>
   );
 }

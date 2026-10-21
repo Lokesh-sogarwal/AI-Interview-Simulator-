@@ -1,6 +1,8 @@
 import { starUserPrompt } from "@/lib/prompts";
 import { safeJsonParse } from "@/lib/openai";
-import { llmText } from "@/lib/llm";
+import { getCurrentUser } from "@/lib/auth";
+import { aiUnavailableResponse, llmText } from "@/lib/llm";
+import { jsonError } from "@/lib/http";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
 
@@ -11,26 +13,13 @@ type StarAnalysis = {
   improvement_feedback: string;
 };
 
-function fallbackStar(answer: string): StarAnalysis {
-  const lower = answer.toLowerCase();
-  const hasSituation = /(situation|context)/.test(lower);
-  const hasAction = /(action|did|implemented|handled)/.test(lower);
-  const hasResult = /(result|impact|outcome|improved|reduced|increased)/.test(lower);
-
-  const starUsed = hasSituation && hasAction && hasResult;
-
-  return {
-    star_used: starUsed,
-    emotional_intelligence_score: starUsed ? 7 : 5,
-    structure_score: starUsed ? 7 : 4,
-    improvement_feedback:
-      "Use STAR: briefly set the situation, your task, the actions you took, and the measurable result.",
-  };
-}
-
 export async function POST(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) return jsonError("Unauthorized", 401);
+
   const rl = rateLimit(request, {
     keyPrefix: "ai:star",
+    key: user.id,
     limit: 30,
     windowMs: 10 * 60 * 1000,
   });
@@ -51,11 +40,11 @@ export async function POST(request: Request) {
   }
 
   const system = "Return ONLY JSON.";
-  const user = starUserPrompt({ question, answer });
+  const prompt = starUserPrompt({ question, answer });
 
   const ai = await llmText({
     system,
-    user,
+    user: prompt,
     models: {
       huggingface: process.env.HUGGINGFACE_MODEL_EVAL || process.env.HUGGINGFACE_MODEL,
       openai: process.env.OPENAI_MODEL,
@@ -63,10 +52,24 @@ export async function POST(request: Request) {
   });
   if (ai) {
     const parsed = safeJsonParse<StarAnalysis>(ai.text);
-    if (parsed) {
-      return Response.json({ ok: true, star: parsed, source: ai.provider });
+    if (parsed && typeof parsed.star_used === "boolean") {
+      const score = (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : 0;
+      };
+      return Response.json({
+        ok: true,
+        star: {
+          star_used: parsed.star_used,
+          emotional_intelligence_score: score(parsed.emotional_intelligence_score),
+          structure_score: score(parsed.structure_score),
+          improvement_feedback: String(parsed.improvement_feedback ?? ""),
+        },
+        source: ai.provider,
+      });
     }
   }
 
-  return Response.json({ ok: true, star: fallbackStar(answer), source: "fallback" });
+  // STAR analysis is optional; the interview continues without it.
+  return aiUnavailableResponse("STAR analysis");
 }

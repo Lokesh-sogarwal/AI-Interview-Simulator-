@@ -2,12 +2,16 @@ import { ObjectId } from "mongodb";
 
 import { getCurrentUser } from "@/lib/auth";
 import { llmText } from "@/lib/llm";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import {
   compactQuestion,
   detectLanguageHint,
   extractTopicKeywords,
+  isClosedStatus,
   looksLikeRepeat,
+  parseDifficulty,
+  parseInterviewType,
+  resolveEffectiveDifficulty,
   stageForQuestionNumber,
   statefulQuestionSystemPrompt,
   statefulQuestionUserPrompt,
@@ -15,6 +19,8 @@ import {
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
 import type { Difficulty, InterviewType } from "@/lib/prompts";
+import { aiUnavailableResponse } from "@/lib/llm";
+import { interviewResumeContext } from "@/lib/resumeStore";
 
 type NextQuestionBody = {
   interviewId?: string;
@@ -95,7 +101,7 @@ export async function POST(request: Request) {
   const db = await getDb();
   if (!db) {
     return Response.json(
-      { ok: false, error: "Database is not configured." },
+      { ok: false, error: dbUnavailableMessage() },
       { status: 503 },
     );
   }
@@ -114,10 +120,14 @@ export async function POST(request: Request) {
   if (String(interview.userId || "") !== String(user.id)) {
     return Response.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
+  if (isClosedStatus(interview.status)) {
+    return Response.json({ ok: false, error: "This interview has already ended." }, { status: 409 });
+  }
 
-  const type = (body?.type || interview.type || "HR") as InterviewType;
-  const rawDifficulty = (body?.difficulty || interview.difficulty || "Medium") as Difficulty;
-  const difficulty = rawDifficulty === "Adaptive" ? ("Medium" as Difficulty) : rawDifficulty;
+  // The stored configuration is authoritative; body values only fill gaps for
+  // legacy documents created before the configuration was persisted.
+  const type = parseInterviewType(interview.type ?? body?.type, "Mixed");
+  const difficultySetting = parseDifficulty(interview.difficulty ?? body?.difficulty, "Adaptive");
   const role = clampString(String(body?.role || interview.role || "Software Engineer").trim() || "Software Engineer", 120);
   const experience = clampString(String(body?.experience || interview.experience || "0-2 years").trim() || "0-2 years", 40);
   const company = clampString(String(body?.company || interview.company || "").trim(), 80);
@@ -128,9 +138,14 @@ export async function POST(request: Request) {
   const resumeProfileString = useResume && (body?.resumeProfile || interview.resumeProfile)
     ? clampString(JSON.stringify(body?.resumeProfile || interview.resumeProfile), 12000)
     : "";
-  const resumeContext = (resumeProfileString || resumeText).trim();
+  // A linked, parsed resume gives a project-first context that survives truncation.
+  const stored = useResume && interview.resumeId ? await interviewResumeContext(db, interview) : null;
+  const resumeContext = (stored?.context || resumeProfileString || resumeText).trim();
 
-  const turns = Array.isArray(interview.turns) ? (interview.turns as Array<{ question?: string; answer?: string }>) : [];
+  const turns = Array.isArray(interview.turns)
+    ? (interview.turns as Array<{ question?: string; answer?: string; evaluation?: { overall_score?: unknown } | null }>)
+    : [];
+  const difficulty: Difficulty = resolveEffectiveDifficulty(difficultySetting, turns);
   const turnQuestions = turns.map((t) => String(t?.question || "")).filter(Boolean);
   const liveAsked = Array.isArray(interview.liveState?.askedQuestions)
     ? (interview.liveState.askedQuestions as string[])
@@ -201,7 +216,10 @@ export async function POST(request: Request) {
   }
 
   if (!question || looksLikeRepeat(question, previousQuestions)) {
-    const candidates = fallbackQuestions(type);
+    // Only use the curated question bank when it still has unasked questions;
+    // otherwise report the failure instead of repeating ourselves.
+    const candidates = fallbackQuestions(type).filter((q) => !looksLikeRepeat(q, previousQuestions));
+    if (candidates.length === 0) return aiUnavailableResponse("Question generation");
     question = candidates[Math.floor(Math.random() * candidates.length)];
     provider = "fallback";
   }
@@ -229,6 +247,7 @@ export async function POST(request: Request) {
     stage,
     questionNumber: nextQuestionNumber,
     question,
+    difficulty,
     source: provider,
   });
 }

@@ -2,7 +2,12 @@ type RateLimitOptions = {
   keyPrefix: string;
   limit: number;
   windowMs: number;
+  /** Optional stable identity (e.g. user id). Defaults to the client IP. */
+  key?: string;
 };
+
+// NOTE: buckets live in process memory, so limits are per server instance.
+// On multi-instance/serverless deployments use a shared store for strict limits.
 
 type Bucket = { count: number; resetAt: number };
 
@@ -36,8 +41,8 @@ function getClientIp(request: Request) {
 export function rateLimit(request: Request, opts: RateLimitOptions) {
   const now = Date.now();
   pruneExpiredBuckets(now);
-  const ip = getClientIp(request);
-  const key = `${opts.keyPrefix}:${ip}`;
+  const identity = opts.key || getClientIp(request);
+  const key = `${opts.keyPrefix}:${identity}`;
 
   const existing = buckets.get(key);
   if (!existing || now >= existing.resetAt) {

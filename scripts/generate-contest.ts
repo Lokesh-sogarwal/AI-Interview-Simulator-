@@ -52,7 +52,7 @@ async function generateDailyContest() {
       generatedAt: generatedAt,
     };
 
-    const result = await db.collection('contests').insertOne(contest as any);
+    const result = await db.collection('contests').insertOne(contest as Record<string, unknown>);
 
     console.log('📋 Contest Details:');
     console.log(`  Name: ${contest.name}`);

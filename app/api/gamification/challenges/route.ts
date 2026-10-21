@@ -1,83 +1,52 @@
 import { NextResponse } from "next/server";
-import { getDb } from "@/lib/mongodb";
-import { getCurrentUser } from "@/lib/auth";
 import { ObjectId } from "mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
+import { getCurrentUser } from "@/lib/auth";
+import { readJsonObject } from "@/lib/http";
+import { DAILY_CHALLENGES, evaluateChallenges, loadCompletedInterviews } from "@/lib/gamification";
 
-interface Challenge {
-  id: string;
-  title: string;
-  description: string;
-  reward: number;
-  icon: string;
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-const DAILY_CHALLENGES: Challenge[] = [
-  {
-    id: "first_interview",
-    title: "Complete Your First Interview",
-    description: "Start and finish an interview session",
-    reward: 50,
-    icon: "🎯",
-  },
-  {
-    id: "resume_save",
-    title: "Save a Resume",
-    description: "Upload and save your resume with ATS analysis",
-    reward: 15,
-    icon: "💾",
-  },
-  {
-    id: "improve_score",
-    title: "Score 80+",
-    description: "Get an interview score of 80 or higher",
-    reward: 75,
-    icon: "⭐",
-  },
-  {
-    id: "streak_3",
-    title: "3-Day Streak",
-    description: "Practice for 3 consecutive days",
-    reward: 100,
-    icon: "🔥",
-  },
-];
+async function loadState(userId: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const users = db.collection("users");
+  const userDoc = await users.findOne({ _id: new ObjectId(userId) }, { projection: { completedChallenges: 1 } });
+  const claimed = Array.isArray(userDoc?.completedChallenges)
+    ? (userDoc.completedChallenges as Array<{ id: string; completedAt: Date }>)
+    : [];
+  const eligible = evaluateChallenges(await loadCompletedInterviews(db, userId));
+  const claimedToday = new Set(
+    claimed.filter((c) => new Date(c.completedAt).toISOString().slice(0, 10) === todayKey()).map((c) => c.id),
+  );
+  return { users, eligible, claimedToday };
+}
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ ok: false, error: "Not authenticated." }, { status: 401 });
+    if (!ObjectId.isValid(user.id)) return NextResponse.json({ ok: false, error: "User not found." }, { status: 404 });
 
-    const db = await getDb();
-    if (!db) return NextResponse.json({ ok: false, error: "Database not configured." }, { status: 503 });
-
-    const users = db.collection("users");
-    const userId = ObjectId.isValid(user.id) ? new ObjectId(user.id) : user.id;
-
-    const userData = await (users.findOne as any)({ _id: userId });
-    if (!userData) return NextResponse.json({ ok: false, error: "User not found." }, { status: 404 });
-
-    const completedChallenges = userData.completedChallenges || [];
-    const today = new Date().toDateString();
+    const state = await loadState(user.id);
+    if (!state) return NextResponse.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
 
     const challenges = DAILY_CHALLENGES.map((challenge) => ({
       ...challenge,
-      completed: completedChallenges.some(
-        (c: any) => c.id === challenge.id && new Date(c.completedAt).toDateString() === today
-      ),
+      completed: state.claimedToday.has(challenge.id),
+      eligible: Boolean(state.eligible[challenge.id]),
     }));
 
     return NextResponse.json({
       ok: true,
       challenges,
-      totalRewardToday: challenges
-        .filter((c) => c.completed)
-        .reduce((sum, c) => sum + c.reward, 0),
+      totalRewardToday: challenges.filter((c) => c.completed).reduce((sum, c) => sum + c.reward, 0),
     });
-  } catch (err: any) {
-    return NextResponse.json(
-      { ok: false, error: err?.message ?? "Failed to fetch challenges" },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error("[gamification/challenges]", err);
+    return NextResponse.json({ ok: false, error: "Failed to fetch challenges" }, { status: 500 });
   }
 }
 
@@ -85,61 +54,37 @@ export async function POST(request: Request) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ ok: false, error: "Not authenticated." }, { status: 401 });
+    if (!ObjectId.isValid(user.id)) return NextResponse.json({ ok: false, error: "User not found." }, { status: 404 });
 
-    const body = (await request.json().catch(() => null)) as { challengeId?: string } | null;
+    const body = await readJsonObject<{ challengeId: string }>(request);
+    const challenge = DAILY_CHALLENGES.find((c) => c.id === body?.challengeId);
+    if (!body?.challengeId) return NextResponse.json({ ok: false, error: "Missing challengeId." }, { status: 400 });
+    if (!challenge) return NextResponse.json({ ok: false, error: "Challenge not found." }, { status: 404 });
 
-    if (!body || !body.challengeId) {
-      return NextResponse.json({ ok: false, error: "Missing challengeId." }, { status: 400 });
+    const state = await loadState(user.id);
+    if (!state) return NextResponse.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
+
+    if (state.claimedToday.has(challenge.id)) {
+      return NextResponse.json({ ok: false, error: "Challenge already completed today." }, { status: 409 });
+    }
+    // Rewards are only granted when the user's recorded activity meets the challenge.
+    if (!state.eligible[challenge.id]) {
+      return NextResponse.json({ ok: false, error: "You haven't met this challenge's requirement yet." }, { status: 400 });
     }
 
-    const challenge = DAILY_CHALLENGES.find((c) => c.id === body.challengeId);
-    if (!challenge) {
-      return NextResponse.json({ ok: false, error: "Challenge not found." }, { status: 404 });
+    // Guard against a concurrent double claim for the same day.
+    const startOfDay = new Date(`${todayKey()}T00:00:00.000Z`);
+    const result = await state.users.updateOne(
+      { _id: new ObjectId(user.id), completedChallenges: { $not: { $elemMatch: { id: challenge.id, completedAt: { $gte: startOfDay } } } } },
+      { $push: { completedChallenges: { id: challenge.id, completedAt: new Date() } } } as never,
+    );
+    if (result.modifiedCount === 0) {
+      return NextResponse.json({ ok: false, error: "Challenge already completed today." }, { status: 409 });
     }
 
-    const db = await getDb();
-    if (!db) return NextResponse.json({ ok: false, error: "Database not configured." }, { status: 503 });
-
-    const users = db.collection("users");
-    const userId = ObjectId.isValid(user.id) ? new ObjectId(user.id) : user.id;
-
-    // Check if already completed today
-    const userData = await (users.findOne as any)({ _id: userId });
-    const today = new Date().toDateString();
-    const alreadyCompleted = (userData?.completedChallenges || []).some(
-      (c: any) => c.id === body.challengeId && new Date(c.completedAt).toDateString() === today
-    );
-
-    if (alreadyCompleted) {
-      return NextResponse.json(
-        { ok: false, error: "Challenge already completed today." },
-        { status: 400 }
-      );
-    }
-
-    // Award points and mark challenge as completed
-    await (users.updateOne as any)(
-      { _id: userId },
-      {
-        $inc: { points: challenge.reward },
-        $push: {
-          completedChallenges: {
-            id: body.challengeId,
-            completedAt: new Date(),
-          },
-        },
-      }
-    );
-
-    return NextResponse.json({
-      ok: true,
-      message: `Challenge completed! +${challenge.reward} points`,
-      reward: challenge.reward,
-    });
-  } catch (err: any) {
-    return NextResponse.json(
-      { ok: false, error: err?.message ?? "Failed to complete challenge" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: true, message: `Challenge completed! +${challenge.reward} points`, reward: challenge.reward });
+  } catch (err) {
+    console.error("[gamification/challenges]", err);
+    return NextResponse.json({ ok: false, error: "Failed to complete challenge" }, { status: 500 });
   }
 }

@@ -1,5 +1,5 @@
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 function buildSlots() {
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
   const db = await getDb();
   if (!db) {
     return Response.json(
-      { ok: false, error: "Database is not configured." },
+      { ok: false, error: dbUnavailableMessage() },
       { status: 503 },
     );
   }
@@ -59,7 +59,7 @@ export async function GET(request: Request) {
 
   const reserved = new Set(
     docs
-      .map((d: any) => (d?.scheduledFor ? new Date(d.scheduledFor) : null))
+      .map((d) => (d?.scheduledFor ? new Date(d.scheduledFor) : null))
       .filter((d): d is Date => Boolean(d) && Number.isFinite((d as Date).getTime()))
       .map((d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`),
   );

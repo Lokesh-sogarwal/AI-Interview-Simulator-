@@ -1,24 +1,22 @@
-import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getCurrentUser, isAdminInDb } from "@/lib/auth";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { generateContestProblems } from "@/app/lib/problem-generator";
 
-export async function POST(request: Request) {
+export async function POST() {
   const user = await getCurrentUser();
   if (!user) {
     return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  // Check if user is admin
-  if (!user.isAdmin) {
+  const db = await getDb();
+  if (!db) return Response.json({ ok: false, error: dbUnavailableMessage() }, { status: 503 });
+
+  // Admin rights are verified against the database, not just the session token.
+  if (!(await isAdminInDb(db, user.id))) {
     return Response.json(
       { ok: false, error: "Only admins can generate contests" },
       { status: 403 }
     );
-  }
-
-  const db = await getDb();
-  if (!db) {
-    return Response.json({ ok: false, error: "Database not available" }, { status: 500 });
   }
 
   try {
@@ -63,10 +61,10 @@ export async function POST(request: Request) {
         _id: result.insertedId,
       },
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error generating contest:", error);
     return Response.json(
-      { ok: false, error: error.message || "Failed to generate contest" },
+      { ok: false, error: "Failed to generate contest" },
       { status: 500 }
     );
   }

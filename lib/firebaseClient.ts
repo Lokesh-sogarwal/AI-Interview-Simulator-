@@ -1,6 +1,7 @@
 import { initializeApp, getApps } from "firebase/app";
+import type { Auth } from "firebase/auth";
 
-let authInstance: any = null;
+let authInstance: Auth | null = null;
 
 export async function initFirebaseClient() {
   if (getApps().length === 0) {
@@ -11,9 +12,8 @@ export async function initFirebaseClient() {
     });
   }
   if (!authInstance) {
-    // @ts-ignore - dynamic import to avoid build-time type issues when firebase isn't installed
-    const firebaseAuth = await import("firebase/auth");
-    const { getAuth } = firebaseAuth;
+    // Loaded lazily so pages that never use Firebase auth don't pay for it.
+    const { getAuth } = await import("firebase/auth");
     authInstance = getAuth();
   }
   return authInstance;

@@ -1,4 +1,7 @@
-import { llmText } from "@/lib/llm";
+import { getCurrentUser } from "@/lib/auth";
+import { aiUnavailableResponse, llmText } from "@/lib/llm";
+import { jsonError, toObjectId } from "@/lib/http";
+import { getDb } from "@/lib/mongodb";
 import { safeJsonParse } from "@/lib/openai";
 import {
   interviewSimulatorSystemPrompt,
@@ -21,6 +24,7 @@ export type FinalReport = {
 };
 
 function clamp0to10(value: number) {
+  if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(10, value));
 }
 
@@ -106,63 +110,13 @@ function normalizeReport(
   };
 }
 
-function fallbackReport(params: {
-  avgTechnicalKnowledge: number;
-  avgCommunicationSkill: number;
-  avgConfidence: number;
-  avgProblemSolving: number;
-  avgEnglishFluency: number;
-  avgProjectKnowledge: number;
-}): FinalReport {
-  const strengths: string[] = [];
-  const weaknesses: string[] = [];
-  const avg = mean([
-    params.avgTechnicalKnowledge,
-    params.avgCommunicationSkill,
-    params.avgConfidence,
-    params.avgProblemSolving,
-    params.avgEnglishFluency,
-    params.avgProjectKnowledge,
-  ]);
-
-  if (avg >= 7) strengths.push("You maintained a strong overall performance across questions.");
-  else if (avg >= 5) strengths.push("You covered the core points, with room to improve depth and clarity.");
-  else strengths.push("You showed effort, but answers often lacked clarity and specificity.");
-
-  if (params.avgTechnicalKnowledge >= 7) strengths.push("Technical knowledge was generally solid.");
-  else if (params.avgTechnicalKnowledge <= 4) weaknesses.push("Technical explanations were often shallow or inaccurate.");
-
-  if (params.avgCommunicationSkill >= 7) strengths.push("Communication was clear and professional.");
-  else if (params.avgCommunicationSkill <= 4) weaknesses.push("Communication lacked structure or clarity.");
-
-  if (params.avgProblemSolving >= 7) strengths.push("Problem-solving depth and reasoning were strong.");
-  else if (params.avgProblemSolving <= 4) weaknesses.push("Problem-solving steps and trade-offs were often unclear.");
-
-  if (weaknesses.length === 0) weaknesses.push("Some answers could be more specific and backed by concrete examples.");
-
-  const final_recommendation: FinalReport["final_recommendation"] =
-    avg >= 6.8 && params.avgTechnicalKnowledge >= 6 && params.avgCommunicationSkill >= 6
-      ? "Hire"
-      : "No Hire";
-
-  return {
-    candidate_summary:
-      "Based on the transcript, the candidate showed their current level of knowledge and communication under interview conditions.",
-    technical_knowledge_score: clamp0to10(round1(params.avgTechnicalKnowledge)),
-    communication_skill_score: clamp0to10(round1(params.avgCommunicationSkill)),
-    confidence_score: clamp0to10(round1(params.avgConfidence)),
-    problem_solving_score: clamp0to10(round1(params.avgProblemSolving)),
-    english_fluency_score: clamp0to10(round1(params.avgEnglishFluency)),
-    project_knowledge_score: clamp0to10(round1(params.avgProjectKnowledge)),
-    strengths,
-    weaknesses,
-    final_recommendation,
-  };
-}
-
 export async function POST(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) return jsonError("Unauthorized", 401);
+
   const rl = rateLimit(request, {
     keyPrefix: "ai:report",
+    key: user.id,
     limit: 10,
     windowMs: 10 * 60 * 1000,
   });
@@ -188,10 +142,23 @@ export async function POST(request: Request) {
         experience?: string;
         company?: string;
         focusAreas?: string;
+        interviewId?: string;
       }
     | null;
 
-  const turns = Array.isArray(body?.turns) ? body!.turns.slice(0, 50) : [];
+  // When the interview is persisted, report on the stored (server-evaluated)
+  // transcript rather than on whatever the browser sends.
+  const interviewOid = toObjectId(body?.interviewId);
+  const db = interviewOid ? await getDb() : null;
+  const storedInterview =
+    db && interviewOid
+      ? await db.collection("interviews").findOne({ _id: interviewOid, userId: user.id }, { projection: { turns: 1 } })
+      : null;
+  if (interviewOid && db && !storedInterview) {
+    return jsonError("Interview not found.", 404);
+  }
+  const sourceTurns = storedInterview && Array.isArray(storedInterview.turns) ? storedInterview.turns : body?.turns;
+  const turns = (Array.isArray(sourceTurns) ? sourceTurns : []).slice(0, 50) as NonNullable<NonNullable<typeof body>["turns"]>;
   const type = (body?.type || "Technical") as InterviewType;
   const role = clampString(body?.role?.trim() || "", 120);
   const experience = clampString(body?.experience?.trim() || "", 40);
@@ -254,7 +221,7 @@ export async function POST(request: Request) {
     "}",
   ].join("\n");
 
-  const user = [
+  const prompt = [
     "Interview context:",
     `Type: ${type}`,
     role ? `Role: ${role}` : "",
@@ -290,7 +257,7 @@ export async function POST(request: Request) {
 
   const ai = await llmText({
     system,
-    user,
+    user: prompt,
     models: {
       huggingface: process.env.HUGGINGFACE_MODEL_REPORT || process.env.HUGGINGFACE_MODEL_EVAL || process.env.HUGGINGFACE_MODEL,
       openai: process.env.OPENAI_MODEL,
@@ -308,20 +275,19 @@ export async function POST(request: Request) {
         avgEnglishFluency,
         avgProjectKnowledge,
       });
+      if (db && interviewOid) {
+        await db
+          .collection("interviews")
+          .updateOne(
+            { _id: interviewOid, userId: user.id },
+            { $set: { finalReport: normalized, reportSource: ai.provider, updatedAt: new Date() } },
+          );
+      }
       return Response.json({ ok: true, report: normalized, source: ai.provider });
     }
   }
 
-  return Response.json({
-    ok: true,
-    report: fallbackReport({
-      avgTechnicalKnowledge,
-      avgCommunicationSkill,
-      avgConfidence,
-      avgProblemSolving,
-      avgEnglishFluency,
-      avgProjectKnowledge,
-    }),
-    source: "fallback",
-  });
+  // Do not present a templated report as AI analysis; the client still shows
+  // the per-answer averages it already has.
+  return aiUnavailableResponse("Report generation");
 }

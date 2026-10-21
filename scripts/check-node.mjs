@@ -1,5 +1,4 @@
 function fail(message) {
-  // eslint-disable-next-line no-console
   console.error(message);
   process.exit(1);
 }
@@ -13,14 +12,13 @@ if (!Number.isFinite(major) || !Number.isFinite(minor)) {
   fail(`Unsupported Node.js version: ${version}`);
 }
 
-// Next.js 16 supports current LTS lines; keep this strict.
-// Accept Node 20.x, 21.x, 22.x (recommend 22 LTS).
-const ok = major === 20 || major === 21 || major === 22;
+// Next.js 16 requires Node.js 20.9 or newer.
+const ok = major > 20 || (major === 20 && minor >= 9);
 if (!ok) {
   fail(
     [
       `Node.js ${version} is not supported for this project.`,
-      "Use Node 22 LTS (recommended) or Node 20/21.",
+      "Use Node 22 or 24 LTS (Node 20.9+ also works).",
       "If you use nvm:",
       "  nvm install 22",
       "  nvm use 22",

@@ -1,7 +1,7 @@
 import { ObjectId } from "mongodb";
 
 import { getCurrentUser } from "@/lib/auth";
-import { getDb } from "@/lib/mongodb";
+import { getDb, dbUnavailableMessage } from "@/lib/mongodb";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export async function GET(
@@ -23,7 +23,7 @@ export async function GET(
   const db = await getDb();
   if (!db) {
     return Response.json(
-      { ok: false, error: "Database is not configured." },
+      { ok: false, error: dbUnavailableMessage() },
       { status: 503 },
     );
   }
@@ -56,21 +56,22 @@ export async function GET(
     return Response.json({ ok: false, error: "Not found." }, { status: 404 });
   }
 
+  const d = doc as Record<string, unknown>;
   return Response.json({
     ok: true,
     interview: {
       id,
-      status: String((doc as any).status ?? ""),
-      scheduledFor: (doc as any).scheduledFor ? new Date((doc as any).scheduledFor).toISOString() : null,
-      role: String((doc as any).role ?? ""),
-      experience: String((doc as any).experience ?? ""),
-      type: String((doc as any).type ?? ""),
-      difficulty: String((doc as any).difficulty ?? ""),
-      company: String((doc as any).company ?? ""),
-      focusAreas: String((doc as any).focusAreas ?? ""),
-      interactionMode: (doc as any).interactionMode === "video" ? "video" : "typing",
-      useResume: (doc as any).useResume !== false,
-      resumeText: (doc as any).resumeText ?? null,
+      status: String(d.status ?? ""),
+      scheduledFor: d.scheduledFor ? new Date(d.scheduledFor as string).toISOString() : null,
+      role: String(d.role ?? ""),
+      experience: String(d.experience ?? ""),
+      type: String(d.type ?? ""),
+      difficulty: String(d.difficulty ?? ""),
+      company: String(d.company ?? ""),
+      focusAreas: String(d.focusAreas ?? ""),
+      interactionMode: d.interactionMode === "video" ? "video" : "typing",
+      useResume: d.useResume !== false,
+      resumeText: d.resumeText ?? null,
     },
   });
 }
