@@ -22,8 +22,15 @@ const client = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeout
 try {
   await client.connect();
   const db = client.db(process.env.MONGODB_DB || "interview_simulator");
-  // Same unique index the app creates; it makes concurrent runs safe.
-  await db.collection("users").createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: "string" } } });
+  // A unique email index makes concurrent runs safe. Reuse an existing one (it may
+  // belong to another app sharing this database); otherwise create it.
+  const indexes = await db.collection("users").listIndexes().toArray().catch(() => []);
+  const emailIndex = indexes.find((ix) => JSON.stringify(ix.key) === JSON.stringify({ email: 1 }));
+  if (!emailIndex) {
+    await db.collection("users").createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: "string" } } });
+  } else if (!emailIndex.unique) {
+    console.warn("! users.email index is not unique; concurrent provisioning runs are not fully protected.");
+  }
   const results = await provisionPrivilegedAccounts(db, accounts);
   let conflicts = 0;
   for (const r of results) {

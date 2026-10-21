@@ -37,18 +37,39 @@ async function ensureIndexes(db: Db) {
     ["resumes", { userId: 1, createdAt: -1 }],
     ["audit_logs", { at: -1 }],
   ];
+  const byCollection = new Map<string, typeof specs>();
+  for (const spec of specs) byCollection.set(spec[0], [...(byCollection.get(spec[0]) ?? []), spec]);
+
   await Promise.all(
-    specs.map(([collection, keys, options]) =>
-      db
+    [...byCollection.entries()].map(async ([collection, list]) => {
+      // Reuse indexes that already exist on the same key (e.g. created by another app
+      // sharing this database) instead of failing on a name clash or replacing them.
+      const existing = await db
         .collection(collection)
-        .createIndex(keys, options ?? {})
-        .catch((err: unknown) => {
-          console.error(
-            `[mongodb] could not create index on ${collection} ${JSON.stringify(keys)}:`,
-            err instanceof Error ? err.message : err,
-          );
-        }),
-    ),
+        .listIndexes()
+        .toArray()
+        .catch(() => [] as Array<{ key: Record<string, unknown>; unique?: boolean }>);
+      for (const [, keys, options] of list) {
+        const match = existing.find((ix) => JSON.stringify(ix.key) === JSON.stringify(keys));
+        if (match) {
+          // Only warn where uniqueness protects data integrity.
+          const critical = (collection === "users" && "email" in keys) || collection === "contest_registrations";
+          if (options?.unique && !match.unique && critical) {
+            console.warn(`[mongodb] ${collection} ${JSON.stringify(keys)} index exists but is not unique; leaving it unchanged.`);
+          }
+          continue;
+        }
+        await db
+          .collection(collection)
+          .createIndex(keys, options ?? {})
+          .catch((err: unknown) => {
+            console.error(
+              `[mongodb] could not create index on ${collection} ${JSON.stringify(keys)}:`,
+              err instanceof Error ? err.message : err,
+            );
+          });
+      }
+    }),
   );
 }
 

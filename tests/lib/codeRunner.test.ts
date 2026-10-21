@@ -103,6 +103,27 @@ describe("Wandbox runner", () => {
     expect(body).toMatchObject({ compiler: "cpython-3.12.7", stdin: "[[2,7],9]", save: false });
   });
 
+  it("tolerates quotes/whitespace in the URL and retries a transient failure", async () => {
+    vi.stubEnv("CODE_RUNNER_URL", ' "https://wandbox.org/api/compile.json" ');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ status: "0", program_output: "1\n", signal: "" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const r = await runTestCase("print(1)", "cpp", { input: "x", output: "1" });
+    expect(r).toMatchObject({ passed: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe("https://wandbox.org/api/compile.json");
+  });
+
+  it("explains which runner failed and how", async () => {
+    vi.stubEnv("CODE_RUNNER_URL", "https://wandbox.org/api/compile.json");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("Forbidden", { status: 403 })));
+    const r = await runTestCase("print(1)", "cpp", { input: "x", output: "1" });
+    expect(r).toMatchObject({ status: 502 });
+    expect((r as { fatal: string }).fatal).toMatch(/wandbox\.org.*HTTP 403.*access denied/);
+  });
+
   it("reports compile errors as failures", async () => {
     vi.stubEnv("CODE_RUNNER_URL", "https://wandbox.org/api/compile.json");
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ status: "1", compiler_error: "prog.cc:1: error", program_output: "", signal: "" })));

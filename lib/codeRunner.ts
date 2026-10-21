@@ -56,41 +56,79 @@ export function wandboxSource(language: SupportedLanguage, source: string) {
 }
 
 async function runInWandbox(url: string, language: SupportedLanguage, source: string, stdin: string): Promise<RunResult> {
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        compiler: process.env[`CODE_RUNNER_WANDBOX_${language.toUpperCase()}`] || WANDBOX_COMPILER[language],
-        code: wandboxSource(language, source),
-        stdin,
-        ...(language === "cpp" ? { options: "c++17" } : {}),
-        save: false,
-      }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      console.error(`[code-runner] wandbox responded with status ${res.status}`);
-      return { ok: false, status: 502, error: "The code runner is unavailable. Please try again." };
-    }
-    const d = (await res.json()) as { status?: string; signal?: string; compiler_error?: string; program_output?: string; program_error?: string };
-    const exit = d.status === undefined || d.status === "" ? null : Number(d.status);
-    const compileFailed = Boolean(d.compiler_error) && !d.program_output && exit !== 0;
-    return {
-      ok: true,
-      stdout: compileFailed ? "" : String(d.program_output ?? "").slice(0, MAX_OUTPUT_CHARS),
-      stderr: String((compileFailed ? d.compiler_error : d.program_error) ?? "").slice(0, MAX_OUTPUT_CHARS),
-      exitCode: Number.isFinite(exit) ? exit : compileFailed ? 1 : null,
-      timedOut: /kill|xcpu|time/i.test(d.signal ?? ""),
-    };
-  } catch (e) {
-    console.error("[code-runner] wandbox request failed:", e instanceof Error ? e.name : "unknown");
-    return { ok: false, status: 502, error: "The code runner did not respond in time. Please try again." };
-  }
+  const { res, error } = await postWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "ai-interview-simulator/1.0" },
+    body: JSON.stringify({
+      compiler: process.env[`CODE_RUNNER_WANDBOX_${language.toUpperCase()}`] || WANDBOX_COMPILER[language],
+      code: wandboxSource(language, source),
+      stdin,
+      ...(language === "cpp" ? { options: "c++17" } : {}),
+      save: false,
+    }),
+  });
+  if (!res || !res.ok) return upstreamFailure(url, res, error);
+  const d = (await res.json().catch(() => null)) as { status?: string; signal?: string; compiler_error?: string; program_output?: string; program_error?: string } | null;
+  if (!d) return { ok: false, status: 502, error: "The code runner returned an unreadable response. Please try again." };
+  const exit = d.status === undefined || d.status === "" ? null : Number(d.status);
+  const compileFailed = Boolean(d.compiler_error) && !d.program_output && exit !== 0;
+  return {
+    ok: true,
+    stdout: compileFailed ? "" : String(d.program_output ?? "").slice(0, MAX_OUTPUT_CHARS),
+    stderr: String((compileFailed ? d.compiler_error : d.program_error) ?? "").slice(0, MAX_OUTPUT_CHARS),
+    exitCode: Number.isFinite(exit) ? exit : compileFailed ? 1 : null,
+    timedOut: /kill|xcpu|time/i.test(d.signal ?? ""),
+  };
+}
+
+/** CODE_RUNNER_URL, trimmed and without stray quotes (common when pasted into a hosting dashboard). */
+export function codeRunnerUrl() {
+  return (process.env.CODE_RUNNER_URL || "").trim().replace(/^["']|["']$/g, "").trim();
 }
 
 export function isCodeRunnerConfigured() {
-  return Boolean(process.env.CODE_RUNNER_URL);
+  return Boolean(codeRunnerUrl());
+}
+
+function hostOf(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "the configured code runner";
+  }
+}
+
+/** POST with one retry on transient failures (network errors, 429, 5xx). */
+async function postWithRetry(url: string, init: RequestInit): Promise<{ res: Response | null; error: string | null }> {
+  let lastError: string | null = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      if ((res.status === 429 || res.status >= 500) && attempt === 0) {
+        lastError = `HTTP ${res.status}`;
+        await new Promise((r) => setTimeout(r, 800));
+        continue;
+      }
+      return { res, error: null };
+    } catch (e) {
+      lastError = e instanceof Error ? `${e.name}: ${e.message}` : "network error";
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+  return { res: null, error: lastError };
+}
+
+async function upstreamFailure(url: string, res: Response | null, error: string | null): Promise<RunResult> {
+  const host = hostOf(url);
+  if (!res) {
+    console.error(`[code-runner] ${host} unreachable:`, error);
+    const timedOut = /timeout|abort/i.test(error ?? "");
+    return { ok: false, status: 502, error: timedOut ? `The code runner (${host}) did not respond in time. Please try again.` : `Could not reach the code runner (${host}). Check CODE_RUNNER_URL on the server.` };
+  }
+  const body = (await res.text().catch(() => "")).slice(0, 300);
+  console.error(`[code-runner] ${host} responded with HTTP ${res.status}:`, body);
+  const hint = res.status === 401 || res.status === 403 ? " It rejected the request (access denied); the service may block this server or need a token." : res.status === 429 ? " It is rate-limiting requests; try again shortly." : "";
+  return { ok: false, status: 502, error: `The code runner (${host}) returned HTTP ${res.status}.${hint}` };
 }
 
 /** Splits on commas that are not nested inside brackets or quotes. */
@@ -218,7 +256,7 @@ export type RunResult =
   | { ok: false; error: string; status: number };
 
 export async function runInSandbox(language: SupportedLanguage, source: string, stdin: string): Promise<RunResult> {
-  const url = process.env.CODE_RUNNER_URL;
+  const url = codeRunnerUrl();
   if (!url) {
     return {
       ok: false,
@@ -228,52 +266,44 @@ export async function runInSandbox(language: SupportedLanguage, source: string, 
   }
   if (runnerKind(url) === "wandbox") return runInWandbox(url, language, source, stdin);
   const target = PISTON_LANGUAGE[language];
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(process.env.CODE_RUNNER_TOKEN ? { Authorization: process.env.CODE_RUNNER_TOKEN } : {}),
-      },
-      body: JSON.stringify({
-        language: target.language,
-        version: "*",
-        files: [{ name: target.file, content: source }],
-        stdin,
-        run_timeout: RUN_TIMEOUT_MS,
-        compile_timeout: 10_000,
-        run_memory_limit: 256 * 1024 * 1024,
-      }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      console.error(`[code-runner] sandbox responded with status ${res.status}`);
-      return { ok: false, status: 502, error: "The code runner is unavailable. Please try again." };
-    }
-    const data = (await res.json()) as {
-      compile?: { code?: number | null; stderr?: string; output?: string };
-      run?: { stdout?: string; stderr?: string; code?: number | null; signal?: string | null };
-    };
-    if (data.compile && data.compile.code) {
-      return {
-        ok: true,
-        stdout: "",
-        stderr: String(data.compile.stderr || data.compile.output || "Compilation failed").slice(0, MAX_OUTPUT_CHARS),
-        exitCode: data.compile.code ?? 1,
-        timedOut: false,
-      };
-    }
+  const { res, error } = await postWithRetry(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(process.env.CODE_RUNNER_TOKEN ? { Authorization: process.env.CODE_RUNNER_TOKEN } : {}),
+    },
+    body: JSON.stringify({
+      language: target.language,
+      version: "*",
+      files: [{ name: target.file, content: source }],
+      stdin,
+      run_timeout: RUN_TIMEOUT_MS,
+      compile_timeout: 10_000,
+      run_memory_limit: 256 * 1024 * 1024,
+    }),
+  });
+  if (!res || !res.ok) return upstreamFailure(url, res, error);
+  const data = (await res.json().catch(() => null)) as {
+    compile?: { code?: number | null; stderr?: string; output?: string };
+    run?: { stdout?: string; stderr?: string; code?: number | null; signal?: string | null };
+  } | null;
+  if (!data) return { ok: false, status: 502, error: "The code runner returned an unreadable response. Please try again." };
+  if (data.compile && data.compile.code) {
     return {
       ok: true,
-      stdout: String(data.run?.stdout ?? "").slice(0, MAX_OUTPUT_CHARS),
-      stderr: String(data.run?.stderr ?? "").slice(0, MAX_OUTPUT_CHARS),
-      exitCode: data.run?.code ?? null,
-      timedOut: data.run?.signal === "SIGKILL",
+      stdout: "",
+      stderr: String(data.compile.stderr || data.compile.output || "Compilation failed").slice(0, MAX_OUTPUT_CHARS),
+      exitCode: data.compile.code ?? 1,
+      timedOut: false,
     };
-  } catch (e) {
-    console.error("[code-runner] request failed:", e instanceof Error ? e.name : "unknown");
-    return { ok: false, status: 502, error: "The code runner did not respond in time. Please try again." };
   }
+  return {
+    ok: true,
+    stdout: String(data.run?.stdout ?? "").slice(0, MAX_OUTPUT_CHARS),
+    stderr: String(data.run?.stderr ?? "").slice(0, MAX_OUTPUT_CHARS),
+    exitCode: data.run?.code ?? null,
+    timedOut: data.run?.signal === "SIGKILL",
+  };
 }
 
 export type TestOutcome = { input: string; expected: string; actual: string; passed: boolean; error?: string };
