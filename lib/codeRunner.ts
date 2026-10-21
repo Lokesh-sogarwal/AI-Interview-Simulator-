@@ -1,6 +1,12 @@
 /**
  * Code execution for coding challenges.
  *
+ * Supported sandboxes (chosen from CODE_RUNNER_URL):
+ * - Piston-compatible, e.g. a self-hosted `http://localhost:2000/api/v2/execute`.
+ * - Wandbox (https://wandbox.org/api/compile.json): free, no key. Good for
+ *   demos; code is sent to a third-party service and is subject to its
+ *   fair-use limits, so self-host Piston for production.
+ *
  * User code is NEVER executed inside the Next.js process or through a local
  * shell. It is sent to an isolated, Piston-compatible sandbox service
  * (https://github.com/engineer-man/piston) configured with CODE_RUNNER_URL,
@@ -31,6 +37,56 @@ const PISTON_LANGUAGE: Record<SupportedLanguage, { language: string; file: strin
 
 export function isSupportedLanguage(value: unknown): value is SupportedLanguage {
   return SUPPORTED_LANGUAGES.includes(value as SupportedLanguage);
+}
+
+const WANDBOX_COMPILER: Record<SupportedLanguage, string> = {
+  python: "cpython-3.12.7",
+  javascript: "nodejs-20.17.0",
+  cpp: "gcc-13.2.0",
+  java: "openjdk-jdk-22+36",
+};
+
+export function runnerKind(url = process.env.CODE_RUNNER_URL || "") {
+  return /wandbox\.org/i.test(url) ? ("wandbox" as const) : ("piston" as const);
+}
+
+/** Wandbox compiles Java as prog.java, so a public Main class must lose its `public`. */
+export function wandboxSource(language: SupportedLanguage, source: string) {
+  return language === "java" ? source.replace(/\bpublic\s+((?:final\s+)?class\s+Main\b)/, "$1") : source;
+}
+
+async function runInWandbox(url: string, language: SupportedLanguage, source: string, stdin: string): Promise<RunResult> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        compiler: process.env[`CODE_RUNNER_WANDBOX_${language.toUpperCase()}`] || WANDBOX_COMPILER[language],
+        code: wandboxSource(language, source),
+        stdin,
+        ...(language === "cpp" ? { options: "c++17" } : {}),
+        save: false,
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.error(`[code-runner] wandbox responded with status ${res.status}`);
+      return { ok: false, status: 502, error: "The code runner is unavailable. Please try again." };
+    }
+    const d = (await res.json()) as { status?: string; signal?: string; compiler_error?: string; program_output?: string; program_error?: string };
+    const exit = d.status === undefined || d.status === "" ? null : Number(d.status);
+    const compileFailed = Boolean(d.compiler_error) && !d.program_output && exit !== 0;
+    return {
+      ok: true,
+      stdout: compileFailed ? "" : String(d.program_output ?? "").slice(0, MAX_OUTPUT_CHARS),
+      stderr: String((compileFailed ? d.compiler_error : d.program_error) ?? "").slice(0, MAX_OUTPUT_CHARS),
+      exitCode: Number.isFinite(exit) ? exit : compileFailed ? 1 : null,
+      timedOut: /kill|xcpu|time/i.test(d.signal ?? ""),
+    };
+  } catch (e) {
+    console.error("[code-runner] wandbox request failed:", e instanceof Error ? e.name : "unknown");
+    return { ok: false, status: 502, error: "The code runner did not respond in time. Please try again." };
+  }
 }
 
 export function isCodeRunnerConfigured() {
@@ -170,6 +226,7 @@ export async function runInSandbox(language: SupportedLanguage, source: string, 
       error: "Code execution is not configured on this server (set CODE_RUNNER_URL to a sandboxed runner).",
     };
   }
+  if (runnerKind(url) === "wandbox") return runInWandbox(url, language, source, stdin);
   const target = PISTON_LANGUAGE[language];
   try {
     const res = await fetch(url, {

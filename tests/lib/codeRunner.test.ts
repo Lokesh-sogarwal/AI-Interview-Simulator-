@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildProgram, findEntryFunction, outputsMatch, parseExampleInput, runTestCase } from "@/lib/codeRunner";
+import { buildProgram, findEntryFunction, outputsMatch, parseExampleInput, runTestCase, runnerKind, wandboxSource } from "@/lib/codeRunner";
 
 describe("example input parsing", () => {
   it("parses named JSON arguments", () => {
@@ -77,5 +77,37 @@ describe("sandbox execution", () => {
     const result = await runTestCase("def solve(a):\n  while True: pass", "python", { input: "a = 1", output: "1" });
     expect(result).toMatchObject({ passed: false });
     expect((result as { error?: string }).error).toMatch(/Time limit/);
+  });
+});
+
+describe("Wandbox runner", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("is selected from the URL and fixes Java's public Main class", () => {
+    expect(runnerKind("https://wandbox.org/api/compile.json")).toBe("wandbox");
+    expect(runnerKind("http://localhost:2000/api/v2/execute")).toBe("piston");
+    expect(wandboxSource("java", "public class Main {}")).toBe("class Main {}");
+    expect(wandboxSource("python", "public class Main")).toBe("public class Main");
+  });
+
+  it("sends the Wandbox request format and judges the output", async () => {
+    vi.stubEnv("CODE_RUNNER_URL", "https://wandbox.org/api/compile.json");
+    const fetchMock = vi.fn(async () => Response.json({ status: "0", program_output: "[0,1]\n", program_error: "", compiler_error: "", signal: "" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const r = await runTestCase("def solve(nums, target):\n  return [0,1]", "python", { input: "nums = [2,7], target = 9", output: "[0,1]" });
+    expect(r).toMatchObject({ passed: true });
+    const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+    expect(body).toMatchObject({ compiler: "cpython-3.12.7", stdin: "[[2,7],9]", save: false });
+  });
+
+  it("reports compile errors as failures", async () => {
+    vi.stubEnv("CODE_RUNNER_URL", "https://wandbox.org/api/compile.json");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ status: "1", compiler_error: "prog.cc:1: error", program_output: "", signal: "" })));
+    const r = await runTestCase("int main( {", "cpp", { input: "x", output: "1" });
+    expect(r).toMatchObject({ passed: false });
+    expect((r as { error?: string }).error).toContain("error");
   });
 });

@@ -79,6 +79,17 @@ User code is **never** executed inside the Next.js server. Running and judging
 submissions requires an isolated, [Piston](https://github.com/engineer-man/piston)-compatible
 execution service. Without `CODE_RUNNER_URL`, the run/submit endpoints return 503.
 
+**Free demo option (no key):** [Wandbox](https://wandbox.org) works out of the box:
+
+```bash
+CODE_RUNNER_URL=https://wandbox.org/api/compile.json
+```
+
+Code is sent to wandbox.org (a public, rate-limited service), so use it for demos only. The public Piston
+API (emkc.org) is whitelist-only since Feb 2026.
+
+**Production:** self-host Piston:
+
 ```bash
 # Self-hosted Piston (see the Piston README for installing language runtimes)
 docker run -d --privileged -p 2000:2000 ghcr.io/engineer-man/piston
