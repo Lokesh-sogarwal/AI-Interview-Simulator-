@@ -5,6 +5,7 @@ import AppShell from "./components/shell/AppShell";
 import { getCurrentUser } from "@/lib/auth";
 import { getUserRole, hasRole } from "@/lib/roles";
 import { getDb } from "@/lib/mongodb";
+import { Analytics } from "@vercel/analytics/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -50,6 +51,7 @@ export default async function RootLayout({
         ) : (
           children
         )}
+        <Analytics />
       </body>
     </html>
   );
