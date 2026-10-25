@@ -1,3 +1,4 @@
+import { PROCTORING_RETENTION_DAYS } from "@/lib/proctoring";
 import { MongoClient, type Db } from "mongodb";
 
 declare global {
@@ -36,6 +37,12 @@ async function ensureIndexes(db: Db) {
     ["contest_submissions", { userId: 1, contestId: 1, problemIndex: 1, createdAt: -1 }],
     ["resumes", { userId: 1, createdAt: -1 }],
     ["audit_logs", { at: -1 }],
+    // Proctoring: idempotency per session, queries by interview/time, and TTL retention.
+    ["proctoring_events", { sessionId: 1, clientEventId: 1 }, { unique: true }],
+    ["proctoring_events", { interviewId: 1, receivedAt: 1 }],
+    ["proctoring_events", { receivedAt: 1 }, { expireAfterSeconds: PROCTORING_RETENTION_DAYS * 86_400 }],
+    ["proctoring_sessions", { interviewId: 1, startedAt: -1 }],
+    ["proctoring_sessions", { startedAt: 1 }, { expireAfterSeconds: PROCTORING_RETENTION_DAYS * 86_400 }],
   ];
   const byCollection = new Map<string, typeof specs>();
   for (const spec of specs) byCollection.set(spec[0], [...(byCollection.get(spec[0]) ?? []), spec]);

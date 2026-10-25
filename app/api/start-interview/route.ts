@@ -72,7 +72,8 @@ export async function POST(request: Request) {
   const experience = clampString(String(body?.experience || "0-2 years").trim() || "0-2 years", 40);
   const company = clampString(String(body?.company || "").trim(), 80);
   const focusAreas = clampString(String(body?.focusAreas || "").trim(), 600);
-  const interactionMode = body?.interactionMode === "video" ? "video" : "typing";
+  // Interviews are voice/video only; older records keep their stored "typing" mode for history.
+  const interactionMode = "video" as const;
   const useResume = body?.useResume !== false;
   const resumeText = useResume ? clampString(String(body?.resumeText || "").trim(), 12000) : "";
   const resumeProfileString = useResume && body?.resumeProfile ? clampString(JSON.stringify(body.resumeProfile), 12000) : "";
@@ -238,6 +239,7 @@ export async function POST(request: Request) {
     const ai = await llmText({
       system,
       user: userPrompt,
+      task: "question",
       models: {
         huggingface: process.env.HUGGINGFACE_MODEL_QUESTION || process.env.HUGGINGFACE_MODEL,
         openai: process.env.OPENAI_MODEL,

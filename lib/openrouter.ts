@@ -30,10 +30,13 @@ export function openRouterModels(override?: string) {
 }
 
 function classify(status: number, message: string): OpenRouterFailure {
-  if (status === 402 || /credit/i.test(message)) return "quota";
+  // The free tier's daily cap arrives as a 429 ("free-models-per-day"); it won't clear by retrying.
+  if (status === 402 || /credit|per-day|per day|daily/i.test(message)) return "quota";
   if (status === 401 || status === 403) return "auth";
   if (status === 429) return "rate_limit";
   if (status === 404 || status === 400) return "model";
+  // Overloaded free providers answer with 502/503/504 (often inside a 200 body).
+  if (status === 408 || status === 502 || status === 503 || status === 504) return "timeout";
   return "unknown";
 }
 
@@ -64,8 +67,9 @@ export async function openRouterText(params: { system: string; user: string; max
           { role: "system", content: params.system },
           { role: "user", content: params.user },
         ],
-        // Reasoning tokens count toward the limit even when excluded, so leave headroom.
-        max_tokens: Math.max(params.maxTokens ?? 800, 1500),
+        // Reasoning tokens count toward the limit even when excluded. Free reasoning models
+        // were seen spending ~1300 tokens thinking, which truncated JSON replies at 1500.
+        max_tokens: Math.max(params.maxTokens ?? 800, 4000),
         temperature: params.temperature ?? 0.4,
         // Free models are often reasoning models: keep the reasoning out of the reply.
         reasoning: { effort: "low", exclude: true },

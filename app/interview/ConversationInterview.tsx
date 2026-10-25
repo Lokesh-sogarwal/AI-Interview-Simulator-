@@ -1,43 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import {
-  Camera,
-  CameraOff,
-  Maximize,
-  Mic,
-  MicOff,
-  Pause,
-  Play,
-  RefreshCw,
-  Repeat,
-  Send,
-  ShieldAlert,
-  SkipForward,
-  Square,
-  Volume2,
-  VolumeX,
-} from "lucide-react";
+import { Maximize, Pause, Play, RefreshCw, Repeat, Send, ShieldCheck, SkipForward, Square, Volume2, VolumeX } from "lucide-react";
 
 import type { Difficulty, InterviewType } from "@/lib/prompts";
 import type { FinalReport } from "@/app/api/ai/report/route";
-import { Alert, Badge, Button, Card, CardBody, Checkbox, ConfirmDialog, Textarea, cn } from "@/app/components/ui";
+import { Alert, Badge, Button, Card, CardBody, Checkbox, ConfirmDialog, cn } from "@/app/components/ui";
 import { canSubmit, initialLiveState, liveReducer, mergeRecognition, type PendingTurn } from "@/lib/conversationState";
-import {
-  DEFAULT_DETAILS,
-  loadDetails,
-  loadInterviewId,
-  loadResumeId,
-  loadResumeText,
-  saveDetails,
-  saveInterviewId,
-} from "@/app/lib/interviewStorage";
+import { DEFAULT_DETAILS, loadDetails, loadInterviewId, loadResumeId, loadResumeText, saveDetails, saveInterviewId } from "@/app/lib/interviewStorage";
 import { createFaceDetector, type FaceDetectorApi } from "./faceDetector";
-import { CompletionView, LiveTopBar, PreflightScreen, PreparingScreen, TimerPill, type DetectorState, type PermissionState } from "./components/LiveParts";
+import { ANSWER_SECONDS, useAnswerTimer } from "./useAnswerTimer";
+import { canRecordAudio, useAnswerRecorder } from "./useAnswerRecorder";
+import { useMediaDevices, useMicLevel } from "./useMediaDevices";
+import { useProctoring } from "./useProctoring";
+import { CompletionView, LiveTopBar, PreparingScreen, TimerPill, type DetectorState } from "./components/LiveParts";
+import { CallControls, InterviewerStage, SelfView, VideoLobby, type CallPhase, type SpeechEngine } from "./components/VideoCall";
 
 type Message = { id: string; role: "interviewer" | "candidate"; text: string; kind: string; questionId: string; at: string };
 type ServerState = { status: string; questionNumber: number; maxMainQuestions: number; secondsLeft: number | null; sessionSeconds: number; paused?: boolean };
 type ConversationPayload = { ok: boolean; error?: string; code?: string; retryable?: boolean; message?: Message | null; messages?: Message[]; state?: ServerState; fallback?: boolean; resumed?: boolean; duplicate?: boolean };
+type SttFailure = { blob: Blob; timedOut: boolean; message: string; retryable: boolean };
 
 type SpeechRecognitionLike = {
   start: () => void;
@@ -52,15 +34,18 @@ type SpeechRecognitionLike = {
 };
 
 const PENDING_KEY = "aisim_pending_turn";
-/** Silence after the last final speech result before the utterance is sent. */
+/** Silence after the last final speech result before the answer is sent automatically. */
 const END_OF_UTTERANCE_MS = 1800;
-const MAX_PROCTOR_WARNINGS = 2;
+/** How long to wait for the recogniser to deliver its last words after stop(). */
+const FLUSH_TIMEOUT_MS = 1500;
+const HAS_WORDS = /[\p{L}\p{N}]/u;
 
 function newRequestId() {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
 function getRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
+  if (typeof window === "undefined") return null;
   const w = window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike; webkitSpeechRecognition?: new () => SpeechRecognitionLike };
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
@@ -75,9 +60,11 @@ async function readJson<T>(res: Response) {
 }
 
 /**
- * Conversational live interview. The candidate talks (or types) to an AI
- * interviewer that keeps the whole conversation in context; the server owns
- * the transcript, decides follow-ups and scores each question when it closes.
+ * Live video interview. The AI interviewer speaks each question (browser
+ * speech synthesis); the candidate answers by voice. Speech becomes text in
+ * the browser (Web Speech API, live captions) or, where that isn't available,
+ * on the server (one Groq Whisper call per answer). The server owns the
+ * transcript, decides follow-ups and scores each question when it closes.
  */
 export default function ConversationInterview() {
   // ---------- Configuration ----------
@@ -85,13 +72,13 @@ export default function ConversationInterview() {
   const [resumeText, setResumeText] = useState("");
   const [resumeId, setResumeId] = useState("");
   const [configLoaded, setConfigLoaded] = useState(false);
-  const voiceMode = config.interactionMode === "video";
+  const [engine, setEngine] = useState<SpeechEngine>("browser");
+  const [canSpeak, setCanSpeak] = useState(true);
 
   // ---------- Devices ----------
-  const [camera, setCamera] = useState<PermissionState>("unknown");
-  const [mic, setMic] = useState<PermissionState>("unknown");
+  const media = useMediaDevices();
+  const micOn = media.mic === "granted";
   const [detector, setDetector] = useState<DetectorState>("idle");
-  const [speechSupported, setSpeechSupported] = useState(true);
 
   // ---------- Conversation ----------
   const [live, dispatch] = useReducer(liveReducer, initialLiveState);
@@ -102,6 +89,7 @@ export default function ConversationInterview() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
   const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
+  /** Final (confirmed) speech of the current answer. */
   const [draft, setDraft] = useState("");
   const [interim, setInterim] = useState("");
   const [autoSend, setAutoSend] = useState(true);
@@ -110,20 +98,19 @@ export default function ConversationInterview() {
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
-  /** Voice mode is speech-only; typing is offered only as an accessibility/failure fallback. */
-  const [typeInstead, setTypeInstead] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
+  /** The answer is being finalised (timer ran out or "Done"): no more input for this question. */
+  const [captureLocked, setCaptureLocked] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [sttFailure, setSttFailure] = useState<SttFailure | null>(null);
+  const [recognitionError, setRecognitionError] = useState("");
 
   // ---------- Completion ----------
   const [finishing, setFinishing] = useState(false);
-  const [done, setDone] = useState<null | { averageScore: number | null; pending: number; report: FinalReport | null; reportError: string | null; endedReason: string; saved: boolean }>(null);
+  const [done, setDone] = useState<null | { averageScore: number | null; pending: number; report: FinalReport | null; reportError: string | null; reportRetryable: boolean; endedReason: string; saved: boolean }>(null);
   const [retryingEval, setRetryingEval] = useState(false);
 
-  // ---------- Video / proctoring ----------
-  const [videoOn, setVideoOn] = useState(false);
-  const [proctorOn, setProctorOn] = useState(false);
-  const [violations, setViolations] = useState(0);
-  const [lastViolation, setLastViolation] = useState("");
-  const [detectorNote, setDetectorNote] = useState("");
+  const [consent, setConsent] = useState(false);
 
   const liveRef = useRef(live);
   liveRef.current = live;
@@ -131,16 +118,39 @@ export default function ConversationInterview() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const wantListeningRef = useRef(false);
   const finalRef = useRef("");
-  const draftEditedRef = useRef(false);
+  const interimRef = useRef("");
+  interimRef.current = interim;
   const silenceTimerRef = useRef<number | null>(null);
+  const flushRef = useRef<(() => void) | null>(null);
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const speakTokenRef = useRef(0);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const faceRef = useRef<FaceDetectorApi | null>(null);
-  const lastFocusViolationRef = useRef(0);
   const finishingRef = useRef(false);
+  const autoSendRef = useRef(autoSend);
+  autoSendRef.current = autoSend;
+  const micOnRef = useRef(micOn);
+  micOnRef.current = micOn;
+
+  const getStream = useCallback(() => media.streamRef.current, [media.streamRef]);
+  const recorder = useAnswerRecorder(getStream);
+  const micLevel = useMicLevel(media.streamRef.current, media.version, !started && micOn);
+
+  // ---------- Proctoring (disclosed in the lobby; observations only, never ends the interview) ----------
+  const proctor = useProctoring({
+    active: started && !done && !finishing,
+    camera: media.camera,
+    mic: media.mic,
+    videoRef,
+    faceDetector: faceRef,
+    detectorReady: detector === "ready",
+    answering: started && live.status === "listening" && micOn && !captureLocked,
+    getStream,
+    streamVersion: media.version,
+  });
+  const proctorRecordRef = useRef(proctor.record);
+  proctorRecordRef.current = proctor.record;
 
   // ---------- Load configuration ----------
   useEffect(() => {
@@ -155,7 +165,8 @@ export default function ConversationInterview() {
       interviewIdRef.current = id;
       setInterviewId(id);
     }
-    setSpeechSupported(Boolean(getRecognitionCtor()));
+    setEngine(getRecognitionCtor() ? "browser" : canRecordAudio() ? "server" : "none");
+    setCanSpeak(typeof window !== "undefined" && "speechSynthesis" in window);
     setConfigLoaded(true);
   }, []);
 
@@ -191,10 +202,10 @@ export default function ConversationInterview() {
   }, []);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [messages, interim]);
+    transcriptEndRef.current?.scrollIntoView?.({ block: "end", behavior: "smooth" });
+  }, [messages, interim, showTranscript]);
 
-  // ---------- Speech recognition (input only) ----------
+  // ---------- Speech recognition (browser engine) ----------
   const clearSilenceTimer = () => {
     if (silenceTimerRef.current) window.clearTimeout(silenceTimerRef.current);
     silenceTimerRef.current = null;
@@ -211,14 +222,11 @@ export default function ConversationInterview() {
     setInterim("");
   }, []);
 
-  const submitRef = useRef<(action: "reply" | "skip", text?: string) => void>(() => {});
+  const submitRef = useRef<(action: "reply" | "skip", text?: string, opts?: { timedOut?: boolean }) => void>(() => {});
 
   const startListening = useCallback(() => {
     const Ctor = getRecognitionCtor();
-    if (!Ctor) {
-      setSpeechSupported(false);
-      return;
-    }
+    if (!Ctor) return;
     wantListeningRef.current = true;
     if (!recognitionRef.current) {
       const rec = new Ctor();
@@ -229,28 +237,37 @@ export default function ConversationInterview() {
         const { finalText, interim: interimText } = mergeRecognition("", event.results, event.resultIndex);
         if (finalText) {
           finalRef.current = `${finalRef.current} ${finalText}`.trim();
-          if (!draftEditedRef.current) setDraft(finalRef.current);
+          setDraft(finalRef.current);
         }
         setInterim(interimText);
+        setRecognitionError("");
         // End of utterance: a pause after final words. Interim words alone never submit.
         clearSilenceTimer();
-        if (finalRef.current && !interimText) {
+        if (wantListeningRef.current && finalRef.current && !interimText) {
           silenceTimerRef.current = window.setTimeout(() => {
-            if (autoSendRef.current && !draftEditedRef.current && finalRef.current.split(/\s+/).length >= 2) submitRef.current("reply", finalRef.current);
+            if (autoSendRef.current && finalRef.current.split(/\s+/).length >= 2) submitRef.current("reply", finalRef.current);
           }, END_OF_UTTERANCE_MS);
         }
       };
       rec.onerror = (e) => {
+        if (e.error && e.error !== "no-speech" && e.error !== "aborted") proctorRecordRef.current("speech_recognition_error", { meta: { error: e.error.replace(/[^a-z-]/g, "").slice(0, 40) } });
         if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-          setMic("denied");
           wantListeningRef.current = false;
-          setNotice("Microphone access was blocked, so voice input is off. You can keep typing your answers.");
-        } else if (e.error !== "no-speech" && e.error !== "aborted") {
-          setNotice("Voice input had a problem. You can keep typing, or press Speak to try again.");
+          setRecognitionError("Speech recognition was blocked. Allow microphone access for this site, then tap Retry listening.");
+        } else if (e.error === "network") {
+          setRecognitionError("Speech recognition lost its connection. Check your network, then tap Retry listening. What you said so far is kept.");
+        } else if (e.error === "audio-capture") {
+          setRecognitionError("No audio is reaching speech recognition. Check your microphone, then tap Retry listening.");
         }
       };
-      // Browsers end continuous recognition after silence; restart while we still want to listen.
       rec.onend = () => {
+        // A pending flush (time-out or Done) is complete once the recogniser has stopped.
+        if (flushRef.current) {
+          flushRef.current();
+          flushRef.current = null;
+          return;
+        }
+        // Browsers end continuous recognition after silence; restart while we still want to listen.
         if (wantListeningRef.current && liveRef.current.status === "listening") {
           try {
             rec.start();
@@ -268,10 +285,32 @@ export default function ConversationInterview() {
     }
   }, []);
 
-  const autoSendRef = useRef(autoSend);
-  autoSendRef.current = autoSend;
+  /** Stops recognition and waits (briefly) for its last final words to arrive. */
+  const flushRecognition = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        clearSilenceTimer();
+        wantListeningRef.current = false;
+        const rec = recognitionRef.current;
+        if (!rec) return resolve();
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        flushRef.current = finish;
+        window.setTimeout(finish, FLUSH_TIMEOUT_MS);
+        try {
+          rec.stop();
+        } catch {
+          finish();
+        }
+      }),
+    [],
+  );
 
-  // ---------- Speech synthesis (output only) ----------
+  // ---------- Speech synthesis (interviewer voice) ----------
   const cancelSpeech = useCallback(() => {
     speakTokenRef.current += 1;
     try {
@@ -294,7 +333,7 @@ export default function ConversationInterview() {
         u.rate = 1;
         u.onend = () => resolve();
         u.onerror = (e) => {
-          if (e.error !== "interrupted" && e.error !== "canceled") setNotice("Audio playback failed; the interviewer's reply is shown as text.");
+          if (e.error !== "interrupted" && e.error !== "canceled") setNotice("Audio playback failed; the interviewer's question is shown as a caption.");
           resolve();
         };
         synth.speak(u);
@@ -306,12 +345,18 @@ export default function ConversationInterview() {
     [ttsOn],
   );
 
-  // Status-driven side effects: mic only listens on the candidate's turn, never while the AI speaks.
+  // The mic only captures on the candidate's turn, never while the interviewer speaks.
   useEffect(() => {
-    if (!started) return;
-    if (live.status === "listening" && voiceMode && mic !== "denied") startListening();
-    else stopListening();
-  }, [live.status, started, voiceMode, mic, startListening, stopListening]);
+    if (!started || done) return;
+    const capture = live.status === "listening" && micOn && !captureLocked && !sttFailure;
+    if (engine === "browser") {
+      if (capture) startListening();
+      else if (!captureLocked) stopListening();
+    } else if (engine === "server") {
+      if (capture) recorder.start();
+      else if (!captureLocked) recorder.pause();
+    }
+  }, [live.status, started, done, micOn, captureLocked, sttFailure, engine, startListening, stopListening, recorder]);
 
   // ---------- Server calls ----------
   const applyPayload = useCallback((data: ConversationPayload) => {
@@ -339,13 +384,13 @@ export default function ConversationInterview() {
           signal: AbortSignal.timeout(90_000),
         });
       } catch {
-        dispatch({ type: "REQUEST_FAILED", message: "Connection lost while waiting for the interviewer. Your answer is kept; retry when you're back online.", retryable: true });
+        dispatch({ type: "REQUEST_FAILED", message: "Connection lost while saving your answer. Your answer is kept; retry when you're back online.", retryable: true });
         return;
       }
       const data = await readJson<ConversationPayload>(res);
       if (!res.ok || !data?.ok) {
         if (data?.code === "too_short") {
-          dispatch({ type: "REQUEST_FAILED", message: data.error || "That reply was too short.", retryable: false });
+          dispatch({ type: "REQUEST_FAILED", message: data.error || "That answer was too short.", retryable: false });
           return;
         }
         if (data && Array.isArray(data.messages)) applyPayload(data);
@@ -361,36 +406,39 @@ export default function ConversationInterview() {
       applyPayload(data);
       if (data.fallback) setNotice("The AI interviewer is unavailable right now, so a standard opening was used. Replies need the AI service.");
       finalRef.current = "";
-      draftEditedRef.current = false;
       setDraft("");
       setInterim("");
       const completed = data.state?.status === "completed";
       const reply = data.message;
-      const shouldSpeak = Boolean(reply && voiceMode && ttsOn);
-      dispatch({ type: "AI_REPLIED", speak: shouldSpeak, completed: false, voice: voiceMode && mic !== "denied" });
+      const shouldSpeak = Boolean(reply && ttsOn && canSpeak);
+      dispatch({ type: "AI_REPLIED", speak: shouldSpeak, completed: false, voice: micOnRef.current });
       if (reply && shouldSpeak) {
         await speak(reply.text);
-        dispatch({ type: "SPEECH_ENDED", voice: voiceMode && mic !== "denied" });
+        dispatch({ type: "SPEECH_ENDED", voice: micOnRef.current });
       }
       if (completed) void finishRef.current("conversation_closed");
     },
-    [applyPayload, mic, speak, ttsOn, voiceMode],
+    [applyPayload, speak, ttsOn, canSpeak],
   );
 
   const submit = useCallback(
-    (action: "reply" | "skip", text?: string) => {
+    (action: "reply" | "skip", text?: string, opts: { timedOut?: boolean } = {}) => {
       const state = liveRef.current;
       if (!canSubmit(state)) return;
       const body = (text ?? "").trim();
-      if (action === "reply" && body.length < 2) {
-        setNotice("Say or type a little more before sending.");
+      // A timed-out answer is sent as heard, however short; a manual one needs a little substance.
+      if (action === "reply" && (opts.timedOut ? !body : body.length < 2)) {
+        setNotice("Say a little more before sending your answer.");
         return;
       }
       clearSilenceTimer();
       stopListening();
       cancelSpeech();
-      const turn: PendingTurn = { requestId: newRequestId(), action, text: action === "reply" ? body : "" };
-      // Optimistic transcript entry so the candidate sees what was sent.
+      setNotice("");
+      const turn: PendingTurn = { requestId: newRequestId(), action, text: action === "reply" ? body : "", ...(opts.timedOut ? { timedOut: true } : {}) };
+      // Move liveRef forward now, not on the next render: a manual click and the timer
+      // firing in the same tick must not both get through.
+      liveRef.current = liveReducer(state, { type: "SUBMIT", turn });
       if (action === "reply") setMessages((m) => [...m, { id: `local-${turn.requestId}`, role: "candidate", text: body, kind: "answer", questionId: "", at: new Date().toISOString() }]);
       dispatch({ type: "SUBMIT", turn });
       void send(turn);
@@ -405,22 +453,101 @@ export default function ConversationInterview() {
     void send(live.pending);
   }
 
+  // ---------- Finalising an answer ----------
+  /** Browser engine: stop listening, collect the last words, then send (or record no answer). */
+  const finishBrowserAnswer = useCallback(
+    async (timedOut: boolean) => {
+      setCaptureLocked(true);
+      const before = finalRef.current;
+      const pendingInterim = interimRef.current.trim();
+      await flushRecognition();
+      // If stopping turned the in-progress words into final ones, they're already in finalRef.
+      const text = (finalRef.current !== before ? finalRef.current : [finalRef.current, pendingInterim].filter(Boolean).join(" ")).trim();
+      setCaptureLocked(false);
+      if (HAS_WORDS.test(text)) submitRef.current("reply", text, timedOut ? { timedOut: true } : {});
+      else if (timedOut) submitRef.current("skip", "", { timedOut: true });
+      else setNotice("We didn't catch an answer yet. Speak, then tap Done answering.");
+    },
+    [flushRecognition],
+  );
+
+  /** Server engine: transcribe one recorded answer, then send it. Failures keep the audio for a retry. */
+  const transcribeAndSubmit = useCallback(async (blob: Blob, timedOut: boolean) => {
+    setTranscribing(true);
+    setSttFailure(null);
+    const form = new FormData();
+    form.append("audio", blob, "answer");
+    const res = await fetch(`/api/interviews/${encodeURIComponent(interviewIdRef.current)}/transcribe`, { method: "POST", body: form }).catch(() => null);
+    const data = res ? await readJson<{ ok: boolean; text?: string; error?: string; retryable?: boolean }>(res) : null;
+    setTranscribing(false);
+    if (!res?.ok || !data?.ok || typeof data.text !== "string") {
+      proctorRecordRef.current("transcription_failed", { force: true });
+      setSttFailure({ blob, timedOut, message: data?.error || "Couldn't reach the server to transcribe your answer. Your recording is kept.", retryable: !res || data?.retryable !== false });
+      return;
+    }
+    setCaptureLocked(false);
+    const text = data.text.trim();
+    setDraft(text);
+    if (HAS_WORDS.test(text)) submitRef.current("reply", text, timedOut ? { timedOut: true } : {});
+    else if (timedOut) submitRef.current("skip", "", { timedOut: true });
+    else setNotice("We couldn't make out any words. Please answer again.");
+  }, []);
+
+  const finishServerAnswer = useCallback(
+    async (timedOut: boolean) => {
+      setCaptureLocked(true);
+      const blob = await recorder.stop();
+      if (blob) return transcribeAndSubmit(blob, timedOut);
+      setCaptureLocked(false);
+      if (timedOut) submitRef.current("skip", "", { timedOut: true });
+      else setNotice("We didn't hear an answer yet. Speak, then tap Done answering.");
+    },
+    [recorder, transcribeAndSubmit],
+  );
+
+  const finishAnswer = useCallback((timedOut: boolean) => (engine === "server" ? finishServerAnswer(timedOut) : finishBrowserAnswer(timedOut)), [engine, finishBrowserAnswer, finishServerAnswer]);
+
+  // ---------- Answer timer ----------
+  // Every interviewer turn the candidate has to answer gets its own countdown. It starts once the
+  // interviewer has finished speaking and pauses while an answer is being finalised or saved, or
+  // the interview is paused. It's purely client-side: no AI call per tick.
+  const activeQuestionKey = [...messages].reverse().find((m) => m.role === "interviewer")?.id ?? "";
+  const micLost = media.mic === "unavailable" || media.mic === "denied";
+  const answerTimer = useAnswerTimer({
+    key: activeQuestionKey,
+    // Policy: a disconnected microphone is a technical interruption, so the answer timer pauses until
+    // it is reconnected. Leaving the tab or muting yourself does not pause it.
+    active: started && !done && !finishing && !captureLocked && !sttFailure && !micLost && (live.status === "awaiting_candidate" || live.status === "listening"),
+    onExpire: () => void finishAnswer(true),
+  });
+
   // ---------- Finish ----------
+  async function requestReport(id: string) {
+    const res = await fetch("/api/ai/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interviewId: id }) }).catch(() => null);
+    const data = res ? await readJson<{ ok: boolean; report?: FinalReport; error?: string; retryable?: boolean }>(res) : null;
+    if (res?.ok && data?.ok && data.report) return { report: data.report, reportError: null, reportRetryable: false };
+    // A network failure (no response) is always worth retrying.
+    return { report: null, reportError: data?.error || "The report service is unavailable.", reportRetryable: !res || Boolean(data?.retryable) };
+  }
+
   async function finish(endedReason: string) {
     if (finishingRef.current) return;
     finishingRef.current = true;
     setFinishing(true);
     stopListening();
+    recorder.cancel();
     cancelSpeech();
     const id = interviewIdRef.current;
     let averageScore: number | null = null;
     let pending = 0;
     let saved = false;
+    // Deliver every proctoring event first, so the server's summary includes them.
+    await proctor.end().catch(() => undefined);
     try {
       const res = await fetch(`/api/interviews/${id}/finish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ endedReason: endedReason === "conversation_closed" ? "max_questions" : endedReason, proctoring: proctorOn ? { violations, lastViolation } : null }),
+        body: JSON.stringify({ endedReason: endedReason === "conversation_closed" ? "max_questions" : endedReason }),
       });
       const data = await readJson<{ ok: boolean; averageScore?: number | null; pendingEvaluations?: number }>(res);
       saved = res.ok && Boolean(data?.ok);
@@ -429,26 +556,19 @@ export default function ConversationInterview() {
     } catch {
       saved = false;
     }
-    let report: FinalReport | null = null;
-    let reportError: string | null = null;
-    if (saved) {
-      const res = await fetch("/api/ai/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interviewId: id }) }).catch(() => null);
-      const data = res ? await readJson<{ ok: boolean; report?: FinalReport; error?: string }>(res) : null;
-      if (res?.ok && data?.ok && data.report) report = data.report;
-      else reportError = data?.error || "The report service is unavailable.";
-    } else {
-      reportError = "The interview could not be finalised on the server.";
-    }
+    const { report, reportError, reportRetryable } = saved
+      ? await requestReport(id)
+      : { report: null, reportError: "The interview could not be finalised on the server.", reportRetryable: false };
     if (saved) saveInterviewId(null);
     try {
       window.localStorage.removeItem(PENDING_KEY);
     } catch {
       // ignore
     }
-    setProctorOn(false);
-    setVideoOn(false);
+    // The call is over: release the camera and microphone.
+    media.stopAll();
     dispatch({ type: "COMPLETE" });
-    setDone({ averageScore, pending, report, reportError, endedReason, saved });
+    setDone({ averageScore, pending, report, reportError, reportRetryable, endedReason, saved });
     setFinishing(false);
   }
   const finishRef = useRef(finish);
@@ -459,17 +579,8 @@ export default function ConversationInterview() {
     const id = done ? interviewIdRef.current : "";
     const res = await fetch(`/api/interviews/${id}/evaluate-pending`, { method: "POST" }).catch(() => null);
     const data = res ? await readJson<{ averageScore?: number | null; pendingEvaluations?: number; error?: string }>(res) : null;
-    let report = done?.report ?? null;
-    let reportError = done?.reportError ?? null;
-    if (res?.ok) {
-      const r = await fetch("/api/ai/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interviewId: id }) }).catch(() => null);
-      const rd = r ? await readJson<{ ok: boolean; report?: FinalReport; error?: string }>(r) : null;
-      if (r?.ok && rd?.report) {
-        report = rd.report;
-        reportError = null;
-      }
-    }
-    setDone((d) => (d ? { ...d, averageScore: data?.averageScore ?? d.averageScore, pending: data?.pendingEvaluations ?? d.pending, report, reportError } : d));
+    const next = res?.ok && !done?.report ? await requestReport(id) : null;
+    setDone((d) => (d ? { ...d, averageScore: data?.averageScore ?? d.averageScore, pending: data?.pendingEvaluations ?? d.pending, ...(next ?? {}) } : d));
     setRetryingEval(false);
   }
 
@@ -489,7 +600,7 @@ export default function ConversationInterview() {
           experience: config.experience,
           company: config.company,
           focusAreas: config.focusAreas,
-          interactionMode: config.interactionMode,
+          interactionMode: "video",
           useResume: Boolean(config.useResume && (resumeText || resumeId)),
           resumeText: config.useResume ? resumeText : "",
           resumeId: config.useResume ? resumeId || undefined : undefined,
@@ -509,14 +620,12 @@ export default function ConversationInterview() {
       saveInterviewId(data.interviewId);
       saveDetails(config);
 
-      // Hydrate an existing conversation (refresh/resume) before starting a new one.
+      // Hydrate an existing conversation (refresh/resume) before starting a new one; no AI call.
       const existing = await fetch(`/api/interviews/${data.interviewId}/conversation`).then((r) => readJson<ConversationPayload>(r)).catch(() => null);
+      await proctor.begin(data.interviewId);
       setStarted(true);
       setStarting(false);
-      if (voiceMode) {
-        setVideoOn(true);
-        setProctorOn(true);
-      }
+      if (!canSpeak) setNotice("This browser can't play speech, so the interviewer's questions are shown as captions.");
       if (existing?.ok && existing.messages && existing.messages.length > 0) {
         applyPayload(existing);
         setNotice("Welcome back. Your conversation so far has been restored.");
@@ -533,7 +642,7 @@ export default function ConversationInterview() {
           return;
         }
         dispatch({ type: "SUBMIT", turn: { requestId: newRequestId(), action: "start", text: "" } });
-        dispatch({ type: "AI_REPLIED", speak: false, completed: existing.state?.status === "completed", voice: voiceMode });
+        dispatch({ type: "AI_REPLIED", speak: false, completed: existing.state?.status === "completed", voice: micOnRef.current });
         if (existing.state?.status === "completed") void finishRef.current("conversation_closed");
         return;
       }
@@ -553,7 +662,7 @@ export default function ConversationInterview() {
       cancelSpeech();
       dispatch({ type: "PAUSE" });
     } else {
-      dispatch({ type: "RESUME", voice: voiceMode && mic !== "denied" });
+      dispatch({ type: "RESUME", voice: micOn });
     }
     const res = await fetch(`/api/interviews/${interviewIdRef.current}/conversation`, {
       method: "POST",
@@ -564,7 +673,17 @@ export default function ConversationInterview() {
     if (data?.state) setSecondsLeft(data.state.secondsLeft);
   }
 
-  // Local countdown between server syncs; the server stays authoritative.
+  async function toggleMic() {
+    if (micOn) {
+      await media.setMicOn(false);
+      dispatch({ type: "LISTEN_STOP" });
+    } else {
+      await media.setMicOn(true);
+      dispatch({ type: "LISTEN_START" });
+    }
+  }
+
+  // Local session countdown between server syncs; the server stays authoritative.
   useEffect(() => {
     if (!started || live.status === "paused" || live.status === "completed" || secondsLeft === null) return;
     const id = window.setInterval(() => setSecondsLeft((s) => (s === null ? s : Math.max(0, s - 1))), 1000);
@@ -575,17 +694,12 @@ export default function ConversationInterview() {
     if (started && secondsLeft === 0 && !done && live.status !== "processing") void finishRef.current("time_limit");
   }, [secondsLeft, started, done, live.status]);
 
-  // ---------- Devices & proctoring ----------
-  const requestPermission = useCallback(async (kind: "camera" | "mic") => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia(kind === "camera" ? { video: true } : { audio: true });
-      s.getTracks().forEach((t) => t.stop());
-      (kind === "camera" ? setCamera : setMic)("granted");
-    } catch {
-      (kind === "camera" ? setCamera : setMic)("denied");
-    }
-  }, []);
+  // A device unplugged mid-call: stop capturing (the proctoring notice explains how to reconnect).
+  useEffect(() => {
+    if (started && !done && micLost) dispatch({ type: "LISTEN_STOP" });
+  }, [micLost, started, done]);
 
+  // ---------- Devices & proctoring ----------
   const loadDetector = useCallback(async () => {
     setDetector("loading");
     const d = await createFaceDetector().catch(() => null);
@@ -594,62 +708,8 @@ export default function ConversationInterview() {
   }, []);
 
   useEffect(() => {
-    if (!videoOn) return;
-    let cancelled = false;
-    navigator.mediaDevices
-      .getUserMedia({ video: true, audio: false })
-      .then((s) => {
-        if (cancelled) return s.getTracks().forEach((t) => t.stop());
-        streamRef.current = s;
-        if (videoRef.current) videoRef.current.srcObject = s;
-      })
-      .catch(() => {
-        setVideoOn(false);
-        setNotice("Camera unavailable; the interview continues without video.");
-      });
-    return () => {
-      cancelled = true;
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    };
-  }, [videoOn]);
-
-  const record = useCallback((reason: string) => {
-    if (finishingRef.current) return;
-    setLastViolation(reason);
-    setViolations((v) => v + 1);
-  }, []);
-
-  useEffect(() => {
-    if (!proctorOn) return;
-    const focusViolation = (reason: string) => {
-      const now = Date.now();
-      if (now - lastFocusViolationRef.current < 2000 || liveRef.current.status === "paused") return;
-      lastFocusViolationRef.current = now;
-      record(reason);
-    };
-    const onVis = () => document.hidden && focusViolation("Switched tab or window");
-    const onBlur = () => focusViolation("Window lost focus");
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("blur", onBlur);
-    const faceTimer = window.setInterval(async () => {
-      const v = videoRef.current;
-      const d = faceRef.current;
-      if (!v || !d || v.readyState < 2 || liveRef.current.status === "paused") return;
-      const boxes = await d.detect(v).catch(() => null);
-      if (boxes && boxes.length > 1) record("More than one face detected");
-    }, 2000);
-    setDetectorNote(faceRef.current ? "Face presence and tab switches are monitored." : "Face detection unavailable; only tab and focus changes are monitored.");
-    return () => {
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("blur", onBlur);
-      window.clearInterval(faceTimer);
-    };
-  }, [proctorOn, record]);
-
-  useEffect(() => {
-    if (proctorOn && violations >= MAX_PROCTOR_WARNINGS) void finishRef.current("proctor_violations");
-  }, [proctorOn, violations]);
+    if (media.camera === "granted" && detector === "idle") void loadDetector();
+  }, [media.camera, detector, loadDetector]);
 
   useEffect(() => {
     if (!started || done) return;
@@ -658,7 +718,7 @@ export default function ConversationInterview() {
     return () => window.removeEventListener("beforeunload", onBefore);
   }, [started, done]);
 
-  // Release mic, camera, speech and detector on unmount.
+  // Release speech recognition, speech output and the detector on unmount (media tracks are released by useMediaDevices).
   useEffect(
     () => () => {
       wantListeningRef.current = false;
@@ -672,7 +732,6 @@ export default function ConversationInterview() {
       } catch {
         // ignore
       }
-      streamRef.current?.getTracks().forEach((t) => t.stop());
       faceRef.current?.dispose?.();
     },
     [],
@@ -690,6 +749,8 @@ export default function ConversationInterview() {
           averageScore={done.averageScore}
           report={done.report}
           reportError={done.reportError}
+          reportRetryable={done.reportRetryable}
+          onRetryReport={retryEvaluation}
           endedReason={done.endedReason}
           answered={messages.filter((m) => m.role === "candidate" && m.kind === "answer").length}
           saved={done.saved}
@@ -708,36 +769,37 @@ export default function ConversationInterview() {
   }
 
   if (!started) {
-    const videoReady = !voiceMode || (camera === "granted" && mic === "granted" && detector === "ready");
     return (
       <>
         <LiveTopBar meta={meta} status={null} onExit={() => (window.location.href = "/")} exitLabel="Leave" />
-        <PreflightScreen
+        <VideoLobby
           meta={[
             ["Type", config.type],
             ["Difficulty", config.difficulty],
             ["Role", config.role],
             ["Experience", config.experience],
-            ["Mode", voiceMode ? "Voice conversation" : "Typed conversation"],
             ["Resume", config.useResume && (resumeText || resumeId) ? "Included" : "Not used"],
           ]}
-          interactionMode={config.interactionMode}
-          resume={{ needed: false, status: "ready" }}
-          camera={camera}
-          mic={mic}
+          stream={media.streamRef.current}
+          version={media.version}
+          camera={media.camera}
+          mic={media.mic}
+          micLevel={micLevel}
+          engine={engine}
           detector={detector}
-          scheduleMessage={scheduleMessage ?? (voiceMode && !speechSupported ? "This browser doesn't support speech recognition. You can still speak with the interviewer's voice on, but you'll type your replies." : null)}
-          canStart={videoReady && !scheduleMessage}
+          canStart={micOn && engine !== "none" && !scheduleMessage && consent}
+          consent={consent}
+          onConsentChange={setConsent}
+          fullscreenSupported={proctor.fullscreen.supported}
           starting={starting}
           message={startError}
-          onRequestCamera={() => void requestPermission("camera")}
-          onRequestMic={() => void requestPermission("mic")}
+          scheduleMessage={scheduleMessage}
+          onRequestDevices={() => void media.request()}
           onLoadDetector={() => void loadDetector()}
-          onStart={() => void start()}
-          onUseTyping={() => {
-            const next = { ...config, interactionMode: "typing" as const };
-            setConfig(next);
-            saveDetails(next);
+          onStart={() => {
+            // Fullscreen must be requested inside the click; the interview starts either way.
+            void proctor.enterFullscreen();
+            void start();
           }}
         />
       </>
@@ -745,18 +807,28 @@ export default function ConversationInterview() {
   }
 
   const status = live.status;
-  const speechOnly = voiceMode && speechSupported && mic !== "denied" && !typeInstead;
   const busy = status === "processing" || finishing;
-  const statusLabel: Record<string, string> = {
-    initializing: "Connecting…",
-    processing: "Interviewer is thinking…",
-    ai_speaking: "Interviewer is speaking",
-    listening: "Listening…",
-    awaiting_candidate: "Your turn",
-    paused: "Paused",
-    error: "Needs attention",
-    completed: "Finished",
-  };
+  const candidateTurn = (status === "listening" || status === "awaiting_candidate") && !captureLocked && !sttFailure;
+  const heard = `${draft} ${interim}`.trim();
+  const phase: CallPhase =
+    status === "initializing"
+      ? "connecting"
+      : status === "ai_speaking"
+        ? "ai_speaking"
+        : transcribing || (captureLocked && engine === "server")
+          ? "transcribing"
+          : captureLocked || status === "processing"
+            ? "thinking"
+            : status === "paused"
+              ? "paused"
+              : status === "error" || sttFailure
+                ? "error"
+                : !micOn
+                  ? "muted"
+                  : heard
+                    ? "candidate_speaking"
+                    : "listening";
+  const lastInterviewer = [...messages].reverse().find((m) => m.role === "interviewer");
 
   return (
     <>
@@ -765,93 +837,54 @@ export default function ConversationInterview() {
         onExit={() => setConfirmLeave(true)}
         status={
           <div className="hidden items-center gap-2 sm:flex">
-            {serverState ? (
-              <Badge>
-                Question {Math.max(1, serverState.questionNumber)} of {serverState.maxMainQuestions}
-              </Badge>
-            ) : null}
-            {proctorOn ? (
-              <Badge tone={violations ? "warning" : "info"} icon={<ShieldAlert className="size-3" aria-hidden />}>
-                {violations}/{MAX_PROCTOR_WARNINGS} warnings
-              </Badge>
-            ) : null}
+            {serverState ? <Badge>Question {Math.max(1, serverState.questionNumber)} of {serverState.maxMainQuestions}</Badge> : null}
+            <Badge tone="info" icon={<ShieldCheck className="size-3" aria-hidden />}>
+              Proctoring on
+            </Badge>
+            <Badge tone={media.camera === "granted" ? "success" : "neutral"}>{media.camera === "granted" ? "● Camera on" : "Camera off"}</Badge>
+            <Badge tone={micOn ? "success" : "warning"}>{micOn ? "● Mic on" : "Mic off"}</Badge>
           </div>
         }
       />
 
-      <div className="mx-auto grid w-full max-w-6xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="grid min-w-0 content-start gap-4">
-          <Card className="flex max-h-[60dvh] min-h-80 flex-col overflow-hidden">
-            <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
-              <p className="flex items-center gap-2 text-sm font-semibold text-text" aria-live="polite">
-                <span
-                  className={cn(
-                    "size-2 rounded-full",
-                    status === "listening" ? "bg-error ui-pulse" : status === "ai_speaking" ? "bg-success ui-pulse" : status === "processing" ? "bg-warning ui-pulse" : "bg-secondary",
-                  )}
-                  aria-hidden
-                />
-                {statusLabel[status]}
-              </p>
-              <div className="flex gap-1">
-                {status === "ai_speaking" ? (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon={<Square className="size-3.5" aria-hidden />}
-                    onClick={() => {
-                      cancelSpeech();
-                      dispatch({ type: "INTERRUPT", voice: voiceMode && mic !== "denied" });
-                    }}
-                  >
-                    Interrupt
-                  </Button>
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label="Repeat the interviewer's last message"
-                  icon={<Repeat className="size-3.5" aria-hidden />}
-                  disabled={busy || status === "paused"}
-                  onClick={() => {
-                    const last = [...messages].reverse().find((m) => m.role === "interviewer");
-                    if (last) void speak(last.text);
-                  }}
-                >
-                  <span className="hidden sm:inline">Repeat</span>
-                </Button>
+      <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
+        <div className="grid min-w-0 content-start gap-3">
+          <div className="relative flex">
+            <InterviewerStage phase={phase} caption={lastInterviewer?.text ?? ""}>
+              <div className="absolute right-4 top-4 flex items-center gap-2">
+                <TimerPill label={answerTimer.expired ? "Time's up" : `Answer time (${ANSWER_SECONDS}s)`} seconds={answerTimer.secondsLeft} warnAt={10} />
               </div>
-            </div>
-            <ol className="flex-1 space-y-3 overflow-y-auto px-4 py-4" aria-label="Conversation transcript">
-              {messages.map((m) => (
-                <li key={m.id} className={cn("flex", m.role === "candidate" ? "justify-end" : "justify-start")}>
-                  <div
-                    className={cn(
-                      "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-6",
-                      m.role === "interviewer" ? "rounded-tl-sm bg-primary text-on-primary" : "rounded-tr-sm border border-border bg-surface-muted text-text",
-                      m.kind === "skip" && "italic text-muted",
-                    )}
-                  >
-                    <span className="sr-only">{m.role === "interviewer" ? "Interviewer: " : "You: "}</span>
-                    {m.text}
-                  </div>
-                </li>
-              ))}
-              {interim ? (
-                <li className="flex justify-end" aria-hidden>
-                  <div className="max-w-[85%] rounded-2xl rounded-tr-sm border border-dashed border-border-strong px-4 py-2.5 text-sm italic text-muted">{interim}…</div>
-                </li>
-              ) : null}
-              {status === "processing" ? (
-                <li className="flex justify-start" aria-hidden>
-                  <div className="rounded-2xl rounded-tl-sm bg-primary/80 px-4 py-2.5 text-sm text-on-primary">
-                    <span className="ui-pulse">…</span>
-                  </div>
-                </li>
-              ) : null}
-              <div ref={transcriptEndRef} />
-            </ol>
-          </Card>
+            </InterviewerStage>
+            <SelfView stream={media.streamRef.current} version={media.version} camera={media.camera} mic={media.mic} videoRef={videoRef} />
+          </div>
+
+          <div className="grid gap-1 rounded-card border border-border bg-surface px-4 py-3" aria-live="polite">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+              {serverState ? `Question ${Math.max(1, serverState.questionNumber)} of ${serverState.maxMainQuestions} · ` : ""}Your answer
+            </p>
+            <p className="min-h-12 text-sm leading-6 text-text">
+              {engine === "server" ? (
+                transcribing ? (
+                  <span className="text-muted">Transcribing your answer…</span>
+                ) : draft ? (
+                  draft
+                ) : status === "listening" && micOn ? (
+                  <span className="text-muted">Recording… your words appear after you finish answering.</span>
+                ) : (
+                  <span className="text-muted">{status === "ai_speaking" ? "Your timer starts when the interviewer finishes speaking." : "Waiting for your turn."}</span>
+                )
+              ) : heard ? (
+                <>
+                  <span>{draft}</span> {interim ? <span className="italic text-muted">{interim}</span> : null}
+                </>
+              ) : (
+                <span className="text-muted">
+                  {status === "ai_speaking" ? "Your timer starts when the interviewer finishes speaking." : status === "listening" && micOn ? "Listening… start speaking." : !micOn ? "Unmute your microphone to answer." : "Waiting for your turn."}
+                </span>
+              )}
+            </p>
+            {answerTimer.expired && (status === "processing" || captureLocked) ? <p className="text-xs text-muted">Time&rsquo;s up, so your answer was sent automatically.</p> : null}
+          </div>
 
           {live.error ? (
             <Alert
@@ -864,7 +897,7 @@ export default function ConversationInterview() {
                     </Button>
                   ) : null}
                   <Button size="sm" variant="ghost" onClick={() => dispatch({ type: "DISCARD_PENDING" })}>
-                    {live.error.retryable ? "Edit answer" : "OK"}
+                    {live.error.retryable ? "Answer again" : "OK"}
                   </Button>
                 </div>
               }
@@ -872,186 +905,149 @@ export default function ConversationInterview() {
               {live.error.message}
             </Alert>
           ) : null}
-          {notice ? <Alert tone="info">{notice}</Alert> : null}
-
-          <Card>
-            <CardBody className="grid gap-3">
-              {speechOnly ? (
-                <>
-                  <p className="text-sm font-semibold text-text">Your reply</p>
-                  <div
-                    className={cn(
-                      "min-h-24 rounded-control border px-3.5 py-2.5 text-sm leading-6",
-                      status === "listening" ? "border-error/40 bg-error-soft/40" : "border-border bg-surface-muted",
-                    )}
-                    aria-live="polite"
-                    aria-label="Live transcript of your reply"
-                  >
-                    {draft || interim ? (
-                      <>
-                        <span className="text-text">{draft}</span> {interim ? <span className="italic text-muted">{interim}</span> : null}
-                      </>
-                    ) : (
-                      <span className="text-muted">
-                        {status === "listening" ? "Listening… start speaking." : status === "ai_speaking" ? "The interviewer is speaking. Tap Interrupt to answer now." : status === "processing" ? "Sent. The interviewer is thinking…" : "Tap Speak to answer."}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted">
-                    {autoSend ? "Your reply is sent automatically after a short pause." : "Tap Done speaking when you've finished."} Only final words are sent, never partial ones.
-                  </p>
-                  <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex flex-wrap gap-2">
-                      <Button variant="ghost" size="sm" onClick={() => submit("skip")} disabled={!canSubmit(live) || busy} icon={<SkipForward className="size-4" aria-hidden />}>
-                        Skip question
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={togglePause} disabled={busy} icon={status === "paused" ? <Play className="size-4" aria-hidden /> : <Pause className="size-4" aria-hidden />}>
-                        {status === "paused" ? "Resume" : "Pause"}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={busy || !draft}
-                        icon={<Repeat className="size-4" aria-hidden />}
-                        onClick={() => {
-                          finalRef.current = "";
-                          clearSilenceTimer();
-                          setDraft("");
-                          setInterim("");
-                        }}
-                      >
-                        Redo
-                      </Button>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="secondary"
-                        disabled={busy || status === "paused" || status === "ai_speaking" || status === "error"}
-                        aria-pressed={status === "listening"}
-                        onClick={() => dispatch({ type: status === "listening" ? "LISTEN_STOP" : "LISTEN_START" })}
-                        icon={status === "listening" ? <MicOff className="size-4" aria-hidden /> : <Mic className="size-4" aria-hidden />}
-                      >
-                        {status === "listening" ? "Mute" : "Speak"}
-                      </Button>
-                      <Button onClick={() => submit("reply", draft)} disabled={!canSubmit(live) || busy || draft.trim().length < 2} loading={status === "processing"} icon={<Send className="size-4" aria-hidden />}>
-                        Done speaking
-                      </Button>
-                    </div>
-                  </div>
-                  <button type="button" className="justify-self-start text-xs text-muted underline underline-offset-2 hover:text-text" onClick={() => setTypeInstead(true)}>
-                    Can&rsquo;t speak right now? Type instead
-                  </button>
-                </>
-              ) : (
-                <>
-              <label htmlFor="reply" className="text-sm font-semibold text-text">
-                {voiceMode ? "Your reply (transcribed; you can edit before sending)" : "Your reply"}
-              </label>
-              <Textarea
-                id="reply"
-                rows={4}
-                value={draft}
-                disabled={busy || status === "paused" || status === "error"}
-                onChange={(e) => {
-                  draftEditedRef.current = true;
-                  clearSilenceTimer();
-                  setDraft(e.target.value);
-                  // Typing while the interviewer talks is a barge-in.
-                  if (status === "ai_speaking") {
-                    cancelSpeech();
-                    dispatch({ type: "INTERRUPT", voice: false });
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                    submit("reply", draft);
-                  }
-                }}
-                placeholder={voiceMode && speechSupported && mic !== "denied" ? "Start speaking. Your words appear here…" : "Type your reply…"}
-                aria-describedby="reply-help"
-              />
-              <p id="reply-help" className="text-xs text-muted">
-                {voiceMode && speechSupported && mic !== "denied"
-                  ? autoSend
-                    ? "Your reply is sent after a short pause. Editing the text turns auto-send off for this reply."
-                    : "Press Send when you're done speaking."
-                  : "Send with the button or Ctrl/⌘ + Enter."}
-              </p>
-              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+          {sttFailure ? (
+            <Alert
+              tone="error"
+              title="Transcription failed"
+              action={
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => submit("skip")} disabled={!canSubmit(live) || busy} icon={<SkipForward className="size-4" aria-hidden />}>
-                    Skip question
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={togglePause} disabled={busy} icon={status === "paused" ? <Play className="size-4" aria-hidden /> : <Pause className="size-4" aria-hidden />}>
-                    {status === "paused" ? "Resume" : "Pause"}
-                  </Button>
-                </div>
-                <div className="flex gap-2">
-                  {voiceMode && speechSupported && mic !== "denied" ? (
-                    <Button
-                      variant="secondary"
-                      disabled={busy || status === "paused" || status === "ai_speaking" || status === "error"}
-                      aria-pressed={status === "listening"}
-                      onClick={() => dispatch({ type: status === "listening" ? "LISTEN_STOP" : "LISTEN_START" })}
-                      icon={status === "listening" ? <MicOff className="size-4" aria-hidden /> : <Mic className="size-4" aria-hidden />}
-                    >
-                      {status === "listening" ? "Stop" : "Speak"}
+                  {sttFailure.retryable ? (
+                    <Button size="sm" variant="secondary" loading={transcribing} onClick={() => void transcribeAndSubmit(sttFailure.blob, sttFailure.timedOut)} icon={<RefreshCw className="size-3.5" aria-hidden />}>
+                      Retry transcription
                     </Button>
                   ) : null}
-                  <Button onClick={() => submit("reply", draft)} disabled={!canSubmit(live) || busy || draft.trim().length < 2} loading={status === "processing"} icon={<Send className="size-4" aria-hidden />}>
-                    Send
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setSttFailure(null);
+                      setCaptureLocked(false);
+                      if (sttFailure.timedOut) submit("skip", "", { timedOut: true });
+                    }}
+                  >
+                    {sttFailure.timedOut ? "Skip this question" : "Answer again"}
                   </Button>
                 </div>
-              </div>
-                  {voiceMode && typeInstead ? (
-                    <button type="button" className="justify-self-start text-xs text-muted underline underline-offset-2 hover:text-text" onClick={() => setTypeInstead(false)}>
-                      Switch back to speaking
-                    </button>
-                  ) : null}
-                </>
-              )}
-            </CardBody>
-          </Card>
+              }
+            >
+              {sttFailure.message}
+            </Alert>
+          ) : null}
+          {recognitionError ? (
+            <Alert
+              tone="warning"
+              action={
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setRecognitionError("");
+                    if (liveRef.current.status === "listening") startListening();
+                    else dispatch({ type: "LISTEN_START" });
+                  }}
+                >
+                  Retry listening
+                </Button>
+              }
+            >
+              {recognitionError}
+            </Alert>
+          ) : null}
+          {notice ? <Alert tone="info">{notice}</Alert> : null}
+          {proctor.notices.map((n) => (
+            <Alert
+              key={n.id}
+              tone={n.tone}
+              action={
+                n.action ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      if (n.action!.kind === "fullscreen") void proctor.enterFullscreen();
+                      else if (n.action!.kind === "reconnect_camera") void media.setCameraOn(true);
+                      else void media.setMicOn(true).then(() => dispatch({ type: "LISTEN_START" }));
+                    }}
+                  >
+                    {n.action.label}
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="ghost" onClick={() => proctor.dismiss(n.id)}>
+                    Dismiss
+                  </Button>
+                )
+              }
+            >
+              {n.message}
+            </Alert>
+          ))}
+
+          <CallControls
+            micOn={micOn}
+            cameraOn={media.camera === "granted"}
+            ending={finishing}
+            onToggleMic={() => void toggleMic()}
+            onToggleCamera={() => void media.setCameraOn(media.camera !== "granted")}
+            onEnd={() => setConfirmEnd(true)}
+          >
+            {status === "ai_speaking" ? (
+              <Button
+                variant="secondary"
+                icon={<Square className="size-4" aria-hidden />}
+                onClick={() => {
+                  cancelSpeech();
+                  dispatch({ type: "INTERRUPT", voice: micOn });
+                }}
+              >
+                Answer now
+              </Button>
+            ) : (
+              <Button onClick={() => void finishAnswer(false)} disabled={!candidateTurn || busy || !micOn} loading={status === "processing" || transcribing} icon={<Send className="size-4" aria-hidden />}>
+                Done answering
+              </Button>
+            )}
+            <Button variant="ghost" onClick={() => submit("skip")} disabled={!canSubmit(live) || busy || captureLocked} icon={<SkipForward className="size-4" aria-hidden />}>
+              <span className="hidden sm:inline">Skip</span>
+            </Button>
+            <Button variant="ghost" onClick={togglePause} disabled={busy || captureLocked} icon={status === "paused" ? <Play className="size-4" aria-hidden /> : <Pause className="size-4" aria-hidden />}>
+              <span className="hidden sm:inline">{status === "paused" ? "Resume" : "Pause"}</span>
+            </Button>
+            <Button
+              variant="ghost"
+              aria-label="Repeat the question"
+              disabled={busy || status === "paused" || !lastInterviewer || !canSpeak}
+              onClick={() => {
+                if (lastInterviewer) void speak(lastInterviewer.text);
+              }}
+              icon={<Repeat className="size-4" aria-hidden />}
+            >
+              <span className="hidden sm:inline">Repeat</span>
+            </Button>
+          </CallControls>
         </div>
 
-        <aside className="grid content-start gap-4">
+        <aside className="grid content-start gap-3">
           <TimerPill label={status === "paused" ? "Session time (paused)" : "Session time left"} seconds={secondsLeft ?? serverState?.sessionSeconds ?? 0} warnAt={90} />
 
-          {voiceMode ? (
-            <Card>
-              <CardBody className="grid gap-3">
-                <div className="relative overflow-hidden rounded-control bg-primary">
-                  <video
-                    ref={(el) => {
-                      videoRef.current = el;
-                      if (el && streamRef.current && el.srcObject !== streamRef.current) el.srcObject = streamRef.current;
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={cn("aspect-video w-full -scale-x-100 object-cover", !videoOn && "invisible")}
-                    aria-label="Your camera preview"
-                  />
-                  {!videoOn ? <div className="absolute inset-0 grid place-items-center text-sm text-on-primary/80">Camera off</div> : null}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="secondary" aria-pressed={videoOn} onClick={() => setVideoOn((v) => !v)} icon={videoOn ? <Camera className="size-3.5" aria-hidden /> : <CameraOff className="size-3.5" aria-hidden />}>
-                    {videoOn ? "Camera on" : "Camera off"}
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => setNotice("Fullscreen was blocked by the browser."))} icon={<Maximize className="size-3.5" aria-hidden />}>
-                    Fullscreen
-                  </Button>
-                </div>
-                {proctorOn ? (
-                  <p className="text-xs text-muted">
-                    {detectorNote}
-                    {lastViolation ? <span className="block text-warning">Last warning: {lastViolation}</span> : null}
-                  </p>
-                ) : null}
-              </CardBody>
-            </Card>
-          ) : null}
+          <Card>
+            <CardBody className="grid gap-2">
+              <button type="button" className="flex items-center justify-between text-left text-sm font-semibold text-text" aria-expanded={showTranscript} onClick={() => setShowTranscript((v) => !v)}>
+                Transcript
+                <span className="text-xs font-normal text-muted">{showTranscript ? "Hide" : "Show"}</span>
+              </button>
+              {showTranscript ? (
+                <ol className="grid max-h-80 gap-2 overflow-y-auto text-sm" aria-label="Conversation transcript">
+                  {messages.map((m) => (
+                    <li key={m.id} className={cn("rounded-control px-3 py-2", m.role === "interviewer" ? "bg-surface-muted text-text" : "border border-border text-text", m.kind === "skip" && "italic text-muted")}>
+                      <span className="block text-[11px] font-semibold text-muted">{m.role === "interviewer" ? "Interviewer" : "You"}</span>
+                      {m.text}
+                    </li>
+                  ))}
+                  <div ref={transcriptEndRef} />
+                </ol>
+              ) : null}
+            </CardBody>
+          </Card>
 
           <Card>
             <CardBody className="grid gap-3 text-sm">
@@ -1060,6 +1056,7 @@ export default function ConversationInterview() {
                 size="sm"
                 variant="secondary"
                 aria-pressed={ttsOn}
+                disabled={!canSpeak}
                 onClick={() => {
                   if (ttsOn) cancelSpeech();
                   setTtsOn((v) => !v);
@@ -1068,19 +1065,18 @@ export default function ConversationInterview() {
               >
                 {ttsOn ? "Interviewer voice on" : "Interviewer voice off"}
               </Button>
-              {voiceMode ? <Checkbox label="Send automatically after a pause" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} /> : null}
+              {engine === "browser" ? <Checkbox label="Send my answer when I pause" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} /> : null}
+              {proctor.fullscreen.supported && !proctor.fullscreen.active ? (
+                <Button size="sm" variant="ghost" onClick={() => void proctor.enterFullscreen().then((ok) => !ok && setNotice("Fullscreen was blocked by the browser."))} icon={<Maximize className="size-3.5" aria-hidden />}>
+                  Enter fullscreen
+                </Button>
+              ) : null}
               <p className="text-xs text-muted">
-                Speech is recognised by your browser and the interviewer&rsquo;s voice is your browser&rsquo;s text-to-speech. Only the final text of your replies is sent to the server.
+                {engine === "server" ? "Each answer is transcribed on our server and the audio discarded." : "Your browser turns speech into text; only the text is saved."} Video is never recorded.
               </p>
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardBody className="grid gap-2 text-sm">
-              <Button variant="danger" onClick={() => setConfirmEnd(true)} disabled={finishing}>
-                {finishing ? "Finishing…" : "End interview"}
-              </Button>
-              <p className="text-xs text-muted">Your answers are scored when you end the interview or move past a question.</p>
+              <p className="text-xs text-muted">
+                Proctoring checks tab visibility, fullscreen, device connections{detector === "ready" ? ", face presence (on this device)" : ""} and long silences. Events are noted for your report; they never end the interview or change your score.
+              </p>
             </CardBody>
           </Card>
         </aside>
@@ -1108,7 +1104,9 @@ export default function ConversationInterview() {
         cancelLabel="Stay"
         onConfirm={() => {
           stopListening();
+          recorder.cancel();
           cancelSpeech();
+          media.stopAll();
           window.location.href = "/";
         }}
         onCancel={() => setConfirmLeave(false)}

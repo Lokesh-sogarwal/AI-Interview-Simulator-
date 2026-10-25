@@ -5,7 +5,6 @@ import {
   ChartColumn,
   CodeXml,
   FileSearch,
-  Keyboard,
   Languages,
   ListChecks,
   MessageSquareText,
@@ -42,8 +41,7 @@ const features = [
 
 const capabilities = [
   { icon: SlidersHorizontal, label: "Easy, Medium, Hard or Adaptive difficulty that adjusts to your answers" },
-  { icon: Keyboard, label: "Typing mode for focused practice" },
-  { icon: Video, label: "Video mode with spoken questions, dictation and optional proctoring" },
+  { icon: Video, label: "Video-call interviews: the AI asks aloud and you answer by speaking, 60 seconds per answer" },
   { icon: Languages, label: "Responds in English, Hindi or Hinglish based on how you answer" },
   { icon: ListChecks, label: "STAR-method analysis for behavioural answers" },
   { icon: ChartColumn, label: "History, progress trends and a final report for every session" },
@@ -51,7 +49,7 @@ const capabilities = [
 
 const steps = [
   { title: "Configure", body: "Pick the interview type, difficulty, target role and experience level. Add a company, focus areas or your resume if you like." },
-  { title: "Interview", body: "Answer by typing or speaking. Every answer is saved as you go, so a refresh does not lose your progress." },
+  { title: "Interview", body: "Answer by speaking, like a real video call. Every answer is saved as you go, so a refresh does not lose your progress." },
   { title: "Review", body: "Read per-question feedback and the final report, then track how your scores change across sessions." },
 ];
 

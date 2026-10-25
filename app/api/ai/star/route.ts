@@ -1,4 +1,5 @@
 import { starUserPrompt } from "@/lib/prompts";
+import { STAR_SCHEMA } from "@/lib/aiSchemas";
 import { safeJsonParse } from "@/lib/openai";
 import { getCurrentUser } from "@/lib/auth";
 import { aiUnavailableResponse, llmText } from "@/lib/llm";
@@ -45,6 +46,9 @@ export async function POST(request: Request) {
   const ai = await llmText({
     system,
     user: prompt,
+    maxTokens: 200,
+    task: "evaluation",
+    jsonSchema: STAR_SCHEMA,
     models: {
       huggingface: process.env.HUGGINGFACE_MODEL_EVAL || process.env.HUGGINGFACE_MODEL,
       openai: process.env.OPENAI_MODEL,

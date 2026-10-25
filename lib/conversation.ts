@@ -37,6 +37,8 @@ export type ConversationMessage = {
   at: Date | string;
   requestId?: string;
   replyTo?: string;
+  /** Sent automatically because the answer timer ran out. */
+  timedOut?: boolean;
 };
 
 export type MainQuestion = {
@@ -113,8 +115,10 @@ export function computeBudget(state: ConversationState, secondsLeft: number | nu
 
 export function conversationSystemPrompt() {
   return [
-    "You are a professional, friendly human interviewer running a live mock interview.",
-    "You speak in short natural turns (1-3 sentences). Ask exactly ONE question per turn.",
+    "You are a professional, friendly human interviewer running a live mock video interview.",
+    "Everything you write is spoken aloud: plain conversational sentences only, no lists, markdown, symbols or emoji.",
+    "Keep each turn short (1-2 sentences, under 40 words). Acknowledgements are a few words at most. Ask exactly ONE question per turn.",
+    "You cannot see the candidate: never comment on their appearance, expressions, body language or confidence as seen on camera.",
     "React to what the candidate ACTUALLY said: acknowledge it briefly, then clarify, challenge an assumption, probe depth, or move on.",
     "Never claim the candidate said something that is not in the transcript. Do not quote them unless quoting exactly.",
     "Never reveal scores, ratings, rubrics or your private notes. Do not grade out loud.",
@@ -137,12 +141,19 @@ type PromptInput = {
   /** null when generating the opening turn. */
   utterance: string | null;
   skipped?: boolean;
+  timedOut?: boolean;
 };
 
-function transcriptLines(state: ConversationState, limit = 18) {
-  return state.messages
+/**
+ * Recent turns only (older context is covered by the list of main questions).
+ * When the latest candidate reply is sent separately it is left out here, so
+ * it is not paid for twice.
+ */
+function transcriptLines(state: ConversationState, excludeLatestCandidate: boolean, limit = 10) {
+  const msgs = excludeLatestCandidate && state.messages.at(-1)?.role === "candidate" ? state.messages.slice(0, -1) : state.messages;
+  return msgs
     .slice(-limit)
-    .map((m) => `${m.role === "interviewer" ? "INTERVIEWER" : "CANDIDATE"}: ${m.kind === "skip" ? "(skipped this question)" : (m.cleanText ?? m.text).slice(0, 900)}`)
+    .map((m) => `${m.role === "interviewer" ? "INTERVIEWER" : "CANDIDATE"}: ${m.kind === "skip" ? "(skipped this question)" : (m.cleanText ?? m.text).slice(0, 500)}`)
     .join("\n");
 }
 
@@ -159,8 +170,13 @@ export function conversationUserPrompt(p: PromptInput) {
   if (p.utterance === null) {
     rules.push("This is the start: greet the candidate warmly in one sentence, briefly say what the interview will cover, then ask the first main question.", 'Use responseType "next_question".');
   } else if (p.skipped) {
-    rules.push('The candidate chose to skip. Acknowledge it neutrally and ask a NEW main question (responseType "next_question"), unless the interview should end.');
+    rules.push(
+      p.timedOut
+        ? 'The candidate ran out of time without answering. Acknowledge it neutrally and ask a NEW main question (responseType "next_question"), unless the interview should end.'
+        : 'The candidate chose to skip. Acknowledge it neutrally and ask a NEW main question (responseType "next_question"), unless the interview should end.',
+    );
   } else {
+    if (p.timedOut) rules.push("This reply was submitted when the candidate's answer time ran out, so it may be cut short; prefer moving on over repeated follow-ups.");
     rules.push(
       "Decide the next move:",
       '- "clarification" if the answer was unclear, off-topic, or too short to judge;',
@@ -181,11 +197,11 @@ export function conversationUserPrompt(p: PromptInput) {
     `Difficulty: ${p.difficulty}. Target role: ${p.role}. Experience: ${p.experience}.`,
     p.company ? `Target company: ${p.company}.` : "",
     p.focusAreas ? `Focus areas: ${p.focusAreas}.` : "",
-    p.resumeContext ? `Candidate resume (ground questions in these real projects/skills; never invent details; projects are labelled [P1], [P2], ...):\n${p.resumeContext}` : "No resume provided.",
+    p.resumeContext ? `Candidate resume (ground questions in these real projects/skills; never invent details; projects are labelled [P1], [P2], ...):\n${p.resumeContext.slice(0, 2000)}` : "No resume provided.",
     `Budget: main questions asked ${p.budget.mainQuestionsAsked}/${CONVERSATION_LIMITS.maxMainQuestions}; follow-ups on current question ${p.budget.followUpsUsed}/${CONVERSATION_LIMITS.maxFollowUpsPerQuestion}${p.budget.secondsLeft !== null ? `; about ${Math.max(0, Math.round(p.budget.secondsLeft / 60))} minute(s) left` : ""}.`,
     asked ? `Main questions so far (do not repeat them):\n${asked}` : "",
     current ? `Current main question: ${current.text}` : "",
-    p.state.messages.length ? `Conversation so far:\n${transcriptLines(p.state)}` : "",
+    p.state.messages.length ? `Conversation so far:\n${transcriptLines(p.state, p.utterance !== null && !p.skipped)}` : "",
     p.utterance !== null && !p.skipped ? `Candidate's latest reply: """${p.utterance}"""` : "",
     "",
     ...rules,
@@ -278,6 +294,7 @@ export function answerBlock(state: ConversationState, questionId: string) {
     answer: candidate.map((m) => m.text).join("\n\n"),
     exchange,
     skipped: msgs.some((m) => m.kind === "skip") && candidate.length === 0,
+    timedOut: msgs.some((m) => m.role === "candidate" && m.timedOut),
   };
 }
 

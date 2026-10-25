@@ -2,19 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import {
-  Camera,
-  CircleAlert,
-  CircleCheck,
-  Clock,
-  FileText,
-  LoaderCircle,
-  LogOut,
-  Mic,
-  ScanFace,
-  ShieldCheck,
-  TriangleAlert,
-} from "lucide-react";
+import { CircleCheck, LoaderCircle, LogOut, Mic, TriangleAlert } from "lucide-react";
 
 import {
   Alert,
@@ -33,7 +21,6 @@ import type { Evaluation } from "@/lib/evaluation";
 import type { FinalReport } from "@/app/api/ai/report/route";
 import { formatScore } from "@/app/lib/format";
 
-export type PermissionState = "unknown" | "granted" | "denied";
 export type DetectorState = "idle" | "loading" | "ready" | "error";
 
 export function formatMmSs(totalSeconds: number) {
@@ -78,159 +65,6 @@ export function LiveTopBar({ meta, status, onExit, exitLabel = "Exit" }: { meta:
         </div>
       </div>
     </header>
-  );
-}
-
-function CheckRow({ icon, label, state, detail, action }: { icon: ReactNode; label: string; state: "ok" | "pending" | "error" | "loading"; detail: string; action?: ReactNode }) {
-  const tone = { ok: "text-success", pending: "text-muted", error: "text-error", loading: "text-muted" }[state];
-  const StateIcon = state === "ok" ? CircleCheck : state === "error" ? CircleAlert : state === "loading" ? LoaderCircle : Clock;
-  return (
-    <li className="flex flex-col gap-3 rounded-control border border-border p-3.5 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-start gap-3">
-        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-background text-primary" aria-hidden>
-          {icon}
-        </span>
-        <div>
-          <p className="text-sm font-semibold text-text">{label}</p>
-          <p className={cn("mt-0.5 flex items-center gap-1.5 text-xs", tone)}>
-            <StateIcon className={cn("size-3.5", state === "loading" && "ui-spin")} aria-hidden />
-            {detail}
-          </p>
-        </div>
-      </div>
-      {action}
-    </li>
-  );
-}
-
-type PreflightProps = {
-  meta: Array<[string, string]>;
-  interactionMode: "typing" | "video";
-  resume: { needed: boolean; status: "idle" | "loading" | "ready" | "error" };
-  camera: PermissionState;
-  mic: PermissionState;
-  detector: DetectorState;
-  scheduleMessage?: string | null;
-  canStart: boolean;
-  starting: boolean;
-  message?: string;
-  onRequestCamera: () => void;
-  onRequestMic: () => void;
-  onLoadDetector: () => void;
-  onStart: () => void;
-  onUseTyping: () => void;
-};
-
-/** Pre-interview checklist: confirms configuration and, for video mode, device permissions. */
-export function PreflightScreen(p: PreflightProps) {
-  const video = p.interactionMode === "video";
-  const deviceProblem = video && (p.camera === "denied" || p.mic === "denied" || p.detector === "error");
-  return (
-    <div className="mx-auto grid w-full max-w-3xl gap-6 px-4 py-8 sm:px-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-text">Ready when you are</h1>
-        <p className="mt-1.5 text-sm text-muted">
-          {video
-            ? "Video mode reads each question aloud, transcribes your spoken answers and monitors the session. Allow access below to begin."
-            : "Questions appear one at a time. Type your answer and submit it, or let the answer timer move you on."}
-        </p>
-      </div>
-
-      <Card>
-        <CardHeader title="Session" description="Change these on the setup page." icon={<FileText className="size-4" />} action={<ButtonLink href="/interview/setup" variant="ghost" size="sm">Edit</ButtonLink>} />
-        <CardBody>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
-            {p.meta.map(([k, v]) => (
-              <div key={k} className="min-w-0">
-                <dt className="text-xs text-muted">{k}</dt>
-                <dd className="truncate font-medium text-text">{v}</dd>
-              </div>
-            ))}
-          </dl>
-        </CardBody>
-      </Card>
-
-      <Card>
-        <CardHeader title="Checklist" icon={<ShieldCheck className="size-4" />} />
-        <CardBody>
-          <ul className="grid gap-2.5">
-            <CheckRow
-              icon={<FileText className="size-4" />}
-              label="Resume"
-              state={!p.resume.needed ? "ok" : p.resume.status === "ready" ? "ok" : p.resume.status === "error" ? "error" : "loading"}
-              detail={
-                !p.resume.needed
-                  ? "Not used for this session"
-                  : p.resume.status === "ready"
-                    ? "Skills and projects extracted"
-                    : p.resume.status === "error"
-                      ? "Could not extract details; the raw resume text will still be used"
-                      : "Analysing resume…"
-              }
-            />
-            {video ? (
-              <>
-                <CheckRow
-                  icon={<Camera className="size-4" />}
-                  label="Camera"
-                  state={p.camera === "granted" ? "ok" : p.camera === "denied" ? "error" : "pending"}
-                  detail={p.camera === "granted" ? "Access granted" : p.camera === "denied" ? "Blocked or unavailable. Allow it in your browser settings." : "Permission needed"}
-                  action={p.camera !== "granted" ? <Button size="sm" variant="secondary" onClick={p.onRequestCamera}>Allow camera</Button> : undefined}
-                />
-                <CheckRow
-                  icon={<Mic className="size-4" />}
-                  label="Microphone"
-                  state={p.mic === "granted" ? "ok" : p.mic === "denied" ? "error" : "pending"}
-                  detail={p.mic === "granted" ? "Access granted" : p.mic === "denied" ? "Blocked or unavailable. Allow it in your browser settings." : "Permission needed"}
-                  action={p.mic !== "granted" ? <Button size="sm" variant="secondary" onClick={p.onRequestMic}>Allow microphone</Button> : undefined}
-                />
-                <CheckRow
-                  icon={<ScanFace className="size-4" />}
-                  label="Face detection"
-                  state={p.detector === "ready" ? "ok" : p.detector === "error" ? "error" : p.detector === "loading" ? "loading" : "pending"}
-                  detail={
-                    p.detector === "ready"
-                      ? "Ready"
-                      : p.detector === "error"
-                        ? "Not supported in this browser or the model failed to load"
-                        : p.detector === "loading"
-                          ? "Loading model…"
-                          : "Loads a small on-device model"
-                  }
-                  action={p.detector === "idle" || p.detector === "error" ? <Button size="sm" variant="secondary" onClick={p.onLoadDetector}>{p.detector === "error" ? "Retry" : "Load"}</Button> : undefined}
-                />
-              </>
-            ) : null}
-          </ul>
-          {deviceProblem ? (
-            <Alert
-              tone="warning"
-              className="mt-4"
-              title="Video mode can’t start yet"
-              action={
-                <Button size="sm" variant="secondary" onClick={p.onUseTyping}>
-                  Use typing mode
-                </Button>
-              }
-            >
-              You can fix the item above, or continue this interview in typing mode instead.
-            </Alert>
-          ) : null}
-        </CardBody>
-      </Card>
-
-      {p.scheduleMessage ? <Alert tone="info">{p.scheduleMessage}</Alert> : null}
-      {p.message ? <Alert tone="error">{p.message}</Alert> : null}
-
-      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
-        <ButtonLink href="/" variant="secondary">
-          Back to dashboard
-        </ButtonLink>
-        <Button size="lg" onClick={p.onStart} disabled={!p.canStart} loading={p.starting}>
-          {p.starting ? "Starting…" : "Start interview"}
-        </Button>
-      </div>
-    </div>
   );
 }
 
@@ -295,6 +129,9 @@ type CompletionProps = {
   averageScore: number | null;
   report: FinalReport | null;
   reportError: string | null;
+  /** True when the report failure is transient (AI/DB outage) and worth retrying. */
+  reportRetryable?: boolean;
+  onRetryReport?: () => void;
   endedReason: string | null;
   answered: number;
   saved: boolean;
@@ -302,7 +139,7 @@ type CompletionProps = {
 };
 
 /** In-place completion view shown when the session ends. */
-export function CompletionView({ averageScore, report, reportError, endedReason, answered, saved, interviewId, pendingEvaluations = 0, onRetryEvaluation, retrying, onRetryFinish }: CompletionProps) {
+export function CompletionView({ averageScore, report, reportError, reportRetryable = false, onRetryReport, endedReason, answered, saved, interviewId, pendingEvaluations = 0, onRetryEvaluation, retrying, onRetryFinish }: CompletionProps) {
   const terminated = endedReason === "proctor_violations";
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-6 px-4 py-8 sm:px-6">
@@ -349,8 +186,16 @@ export function CompletionView({ averageScore, report, reportError, endedReason,
                 </div>
                 <p className="text-sm leading-6 text-text">{report.candidate_summary}</p>
               </>
+            ) : answered === 0 ? (
+              <Alert tone="info" title="Nothing to evaluate">
+                No answers were recorded in this session, so no score or report was generated.
+              </Alert>
             ) : (
-              <Alert tone="warning" title="AI report unavailable">
+              <Alert
+                tone="warning"
+                title="AI report unavailable"
+                action={reportRetryable && onRetryReport ? <Button size="sm" variant="secondary" loading={retrying} onClick={onRetryReport}>Try again</Button> : undefined}
+              >
                 {reportError || "The summary report could not be generated."} Your score above is the average of the per-answer evaluations, which are saved with the session.
               </Alert>
             )}

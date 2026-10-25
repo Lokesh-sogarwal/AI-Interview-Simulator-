@@ -7,7 +7,6 @@ import {
   CircleCheck,
   FileText,
   Gauge,
-  Keyboard,
   Layers,
   MessagesSquare,
   Play,
@@ -46,7 +45,6 @@ import {
   saveInterviewId,
   saveResumeId,
   saveResumeText,
-  type InteractionMode,
   type InterviewDetails,
 } from "@/app/lib/interviewStorage";
 
@@ -243,7 +241,7 @@ export default function InterviewSetupClient() {
     ["Role", details.role.trim() || "—"],
     ["Experience", details.experience],
     ["Company", details.company.trim() || "Any"],
-    ["Mode", details.interactionMode === "video" ? "Video" : "Typing"],
+    ["Mode", "Video interview"],
     ["Resume", resumeMode === "upload" ? resumeFile?.name || "Not chosen" : resumeMode === "saved" ? "Saved resume" : "None"],
     ["Start", startMode === "now" ? "Now" : scheduledDate && scheduledTime ? `${scheduledDate} at ${scheduledTime}` : "Not scheduled"],
   ];
@@ -377,21 +375,15 @@ export default function InterviewSetupClient() {
               </Field>
             ) : null}
 
-            <OptionCards<InteractionMode>
-              label="How you will answer"
-              value={details.interactionMode}
-              onChange={(v) => set("interactionMode", v)}
-              columns={2}
-              options={[
-                { value: "typing", label: "Typing", description: "Type your answers. Works everywhere.", icon: <Keyboard className="size-4" /> },
-                {
-                  value: "video",
-                  label: "Video",
-                  description: "Spoken questions, dictation and camera-based proctoring. Needs camera and microphone access.",
-                  icon: <Video className="size-4" />,
-                },
-              ]}
-            />
+            <div className="flex items-start gap-3 rounded-control border border-border bg-surface-muted p-3.5">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-background text-primary" aria-hidden>
+                <Video className="size-4" />
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-text">Video interview</p>
+                <p className="mt-0.5 text-xs text-muted">The AI interviewer asks each question aloud and you answer by speaking, with 60 seconds per answer. You&rsquo;ll need a microphone; a camera is recommended.</p>
+              </div>
+            </div>
           </SectionCard>
 
           <SectionCard step={4} title="When to start" description="Start right away or book a time slot." done={scheduleDone}>
@@ -444,11 +436,9 @@ export default function InterviewSetupClient() {
                   </div>
                 ))}
               </dl>
-              {details.interactionMode === "video" ? (
-                <Badge tone="info" className="w-fit">
-                  You will be asked for camera and microphone access
-                </Badge>
-              ) : null}
+              <Badge tone="info" className="w-fit">
+                You will be asked for camera and microphone access
+              </Badge>
               {error ? <Alert tone="error">{error}</Alert> : null}
               {notice ? <Alert tone="warning">{notice}</Alert> : null}
               <Button type="submit" size="lg" loading={submitting} icon={<Play className="size-4" aria-hidden />} className="w-full">

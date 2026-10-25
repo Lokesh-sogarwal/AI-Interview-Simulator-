@@ -254,8 +254,65 @@ describe("question generation", () => {
 describe("final report", () => {
   it("returns 503 instead of a templated report when AI is unavailable", async () => {
     state.llm = () => null;
-    const res = await report(jsonRequest("/api/ai/report", { turns: [{ question: "q", answer: "a", evaluation: goodEvaluation }] }));
+    const id = await createInterview();
+    Object.assign(state.db!.collection("interviews").docs[0], { status: "completed", turns: [{ question: "q", answer: "a", evaluation: goodEvaluation }] });
+    const res = await report(jsonRequest("/api/ai/report", { interviewId: id }));
     expect(res.status).toBe(503);
     expect((await json(res)).report).toBeUndefined();
+  });
+
+  it("no longer builds reports from answers sent by the browser", async () => {
+    state.llm = vi.fn(() => ({ text: "{}", provider: "huggingface" as const }));
+    const res = await report(jsonRequest("/api/ai/report", { turns: [{ question: "q", answer: "a", evaluation: goodEvaluation }] }));
+    expect(res.status).toBe(400);
+    expect((await json(res)).code).toBe("missing_interview_id");
+    expect(state.llm).not.toHaveBeenCalled();
+  });
+});
+
+describe("provider routing", () => {
+  it("generates the next interview question through the question provider", async () => {
+    state.llm = () => ({ text: "How would you shard a write-heavy table?", provider: "huggingface" });
+    const id = await createInterview({ type: "Technical" });
+    const res = await nextQuestion(jsonRequest("/api/next-question", { interviewId: id }));
+    expect(res.status).toBe(200);
+    const { llmText } = await import("@/lib/llm");
+    const calls = vi.mocked(llmText).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every(([p]) => p.task === "question")).toBe(true);
+  });
+
+  it("evaluates a single answer through the evaluation provider with a schema", async () => {
+    state.llm = () => ({ text: JSON.stringify(goodEvaluation), provider: "huggingface" });
+    const res = await evaluate(jsonRequest("/api/ai/evaluate", { question: "Explain caching.", answer: "Caching keeps computed results close to readers to cut latency." }));
+    expect(res.status).toBe(200);
+    const { llmText } = await import("@/lib/llm");
+    expect(vi.mocked(llmText).mock.calls[0][0]).toMatchObject({ task: "evaluation" });
+    expect(vi.mocked(llmText).mock.calls[0][0].jsonSchema).toBeTruthy();
+  });
+
+  it("rejects an evaluation with missing or out-of-range scores instead of scoring it 0", async () => {
+    state.llm = () => ({ text: JSON.stringify({ ...goodEvaluation, technical_score: "7/10", depth_score: 42 }), provider: "huggingface" });
+    const res = await evaluate(jsonRequest("/api/ai/evaluate", { question: "Explain caching.", answer: "Caching keeps computed results close to readers to cut latency." }));
+    expect(res.status).toBe(503);
+    expect((await res.json()).evaluation).toBeUndefined();
+  });
+});
+
+describe("video-only interviews", () => {
+  it("stores new interviews as video even if a client asks for typing", async () => {
+    const id = await createInterview({ interactionMode: "typing" });
+    const data = await json(await getInterview(jsonRequest(`/api/interviews/${id}`), params({ id })));
+    expect((data.interview as { interactionMode: string }).interactionMode).toBe("video");
+    const started = await json(await startInterview(jsonRequest("/api/start-interview", { interactionMode: "typing", type: "HR" })));
+    const doc = state.db!.collection("interviews").docs.find((d) => String(d._id) === started.interviewId)!;
+    expect(doc.interactionMode).toBe("video");
+  });
+
+  it("still reports the original mode of interviews taken by typing", async () => {
+    const id = await createInterview();
+    state.db!.collection("interviews").docs[0].interactionMode = "typing";
+    const data = await json(await getInterview(jsonRequest(`/api/interviews/${id}`), params({ id })));
+    expect((data.interview as { interactionMode: string }).interactionMode).toBe("typing");
   });
 });

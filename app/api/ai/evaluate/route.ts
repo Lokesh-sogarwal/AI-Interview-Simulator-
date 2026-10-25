@@ -1,4 +1,5 @@
 import { evaluationSystemPrompt, evaluationUserPrompt, type InterviewType } from "@/lib/prompts";
+import { EVALUATION_SCHEMA, isValidEvaluation } from "@/lib/aiSchemas";
 import { getCurrentUser } from "@/lib/auth";
 import { safeJsonParse } from "@/lib/openai";
 import { aiUnavailableResponse, llmText } from "@/lib/llm";
@@ -92,6 +93,9 @@ export async function POST(request: Request) {
   const ai = await llmText({
     system,
     user: prompt,
+    maxTokens: 320,
+    task: "evaluation",
+    jsonSchema: EVALUATION_SCHEMA,
     models: {
       huggingface: process.env.HUGGINGFACE_MODEL_EVAL || process.env.HUGGINGFACE_MODEL,
       openai: process.env.OPENAI_MODEL,
@@ -99,13 +103,14 @@ export async function POST(request: Request) {
   });
   if (ai) {
     const parsed = safeJsonParse<Evaluation>(ai.text);
-    if (parsed) {
+    // Reject incomplete or out-of-range scores instead of defaulting them to 0.
+    if (isValidEvaluation(parsed)) {
       const normalized = normalizeEval(parsed);
       const guarded = applyRelevanceCap({ question, answer, type, evaluation: normalized });
       await remember(guarded);
       return Response.json({ ok: true, evaluation: guarded, source: ai.provider });
     }
-    console.error("[ai/evaluate] provider returned non-JSON output");
+    console.error("[ai/evaluate] provider returned invalid evaluation output");
   }
 
   // Never fabricate a score: tell the client so it can keep the answer and retry.

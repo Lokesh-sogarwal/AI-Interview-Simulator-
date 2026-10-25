@@ -17,8 +17,13 @@ import {
 } from "@/app/components/ui";
 import { STATUS_LABEL, formatDateTime, formatScore, statusTone } from "@/app/lib/format";
 import { getCurrentUser } from "@/lib/auth";
+import type { ProctoringSummary } from "@/lib/proctoring";
+import { reevaluationsLeft } from "@/lib/reevaluation";
 import { getDb } from "@/lib/mongodb";
 import FinishInterviewButton from "./FinishInterviewButton";
+import GenerateReportButton from "./GenerateReportButton";
+import ProctoringNoteForm from "./ProctoringNoteForm";
+import ReevaluateButton from "./ReevaluateButton";
 
 type StoredEvaluation = {
   technical_score?: number;
@@ -37,6 +42,7 @@ type StoredEvaluation = {
 type StoredTurn = {
   question?: string;
   answer?: string;
+  timedOut?: boolean;
   evaluation?: StoredEvaluation | null;
   star?: { star_used?: boolean; structure_score?: number; emotional_intelligence_score?: number; improvement_feedback?: string } | null;
 };
@@ -53,6 +59,7 @@ type StoredReport = {
   strengths?: string[];
   weaknesses?: string[];
   improvement_suggestions?: string[];
+  practice_topics?: string[];
 };
 
 type StoredInterview = {
@@ -74,7 +81,60 @@ type StoredInterview = {
   turns?: StoredTurn[];
   transcript?: StoredTurn[];
   proctoring?: { violations?: number | null; lastViolation?: string | null } | null;
+  reevaluationsUsed?: number;
+  proctoringSummary?: ProctoringSummary | null;
 };
+
+const secs = (ms: number) => `${Math.round(ms / 1000)} s`;
+
+/** Integrity observations from server-validated events, shown apart from the scores. */
+function IntegritySummary({ id, summary }: { id: string; summary: ProctoringSummary }) {
+  const rows: Array<[string, string]> = [
+    ["Tab hidden", summary.tabHidden.count ? `${summary.tabHidden.count}× (total ${secs(summary.tabHidden.totalMs)}, longest ${secs(summary.tabHidden.longestMs)})` : "None"],
+    ["Window focus lost", summary.windowBlurs ? `${summary.windowBlurs}×` : "None"],
+    ["Fullscreen exits", summary.fullscreenExits ? `${summary.fullscreenExits}×` : "None"],
+    ["Camera / microphone interruptions", `${summary.devices.cameraInterruptions} / ${summary.devices.micInterruptions}${summary.devices.totalInterruptedMs ? ` (total ${secs(summary.devices.totalInterruptedMs)})` : ""}`],
+    ["Camera turned off by you", summary.devices.cameraTurnedOff ? `${summary.devices.cameraTurnedOff}×` : "No"],
+    ["Face not detected (sustained)", summary.face.notDetected ? `${summary.face.notDetected}× (total ${secs(summary.face.notDetectedMs)})` : "None"],
+    ["More than one face (sustained)", summary.face.multipleFaces ? `${summary.face.multipleFaces}×` : "None"],
+    ["Long silences while answering", summary.audio.silences ? `${summary.audio.silences}×` : "None"],
+    ["Speech / transcription issues", `${summary.audio.recognitionErrors + summary.audio.transcriptionFailures}`],
+    ["Reloads or reconnects", `${summary.sessions.reconnects}`],
+    ["Pauses", `${summary.pauses}`],
+  ];
+  const tone = summary.status === "review_recommended" ? "warning" : summary.status === "minor" ? "info" : "success";
+  const title = summary.status === "review_recommended" ? "Some events are worth a human review" : summary.status === "minor" ? "A few minor events were noted" : "No integrity concerns were noted";
+  return (
+    <section aria-labelledby="integrity-title" className="mt-8">
+      <h2 id="integrity-title" className="mb-4 text-lg font-semibold text-text">
+        Integrity monitoring
+      </h2>
+      <Card>
+        <CardBody className="grid gap-4">
+          <Alert tone={tone} title={title}>
+            These are technical observations from the browser, kept separate from your scores. They are not proof of misconduct: a browser cannot see other devices or people off camera, and device or network problems cause many of them.
+            {summary.reviewReasons.length ? (
+              <ul className="mt-2 grid gap-1">
+                {summary.reviewReasons.map((r, i) => (
+                  <li key={i}>• {r}</li>
+                ))}
+              </ul>
+            ) : null}
+          </Alert>
+          <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+            {rows.map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-3 border-b border-border pb-1.5">
+                <dt className="text-muted">{k}</dt>
+                <dd className="text-right font-medium text-text">{v}</dd>
+              </div>
+            ))}
+          </dl>
+          <ProctoringNoteForm interviewId={id} initialNote={summary.candidateNote ?? ""} />
+        </CardBody>
+      </Card>
+    </section>
+  );
+}
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
@@ -124,6 +184,8 @@ export default async function InterviewReportView({ id }: { id: string }) {
     const s = evaluated.map((t) => num(t.evaluation?.[key])).filter((n): n is number => n !== null);
     return s.length ? Math.round((s.reduce((a, b) => a + b, 0) / s.length) * 10) / 10 : null;
   };
+  const finished = interview.status === "completed" || interview.status === "terminated";
+  const canReevaluate = finished && turns.some((t) => t.answer?.trim());
   const duration = durationLabel(interview);
   const date = interview.completedAt ?? interview.createdAt;
 
@@ -144,8 +206,8 @@ export default async function InterviewReportView({ id }: { id: string }) {
       />
 
       {interview.status === "terminated" ? (
-        <Alert tone="error" title="Ended after repeated proctoring warnings" className="mb-6">
-          {interview.proctoring?.lastViolation ? `Last warning: ${interview.proctoring.lastViolation}.` : null}
+        <Alert tone="warning" title="This session was ended automatically by an earlier version of proctoring" className="mb-6">
+          That version stopped interviews after repeated focus or tab changes; it no longer does.{interview.proctoring?.lastViolation ? ` Last event noted: ${interview.proctoring.lastViolation}.` : ""}
         </Alert>
       ) : interview.status === "in_progress" ? (
         <Alert tone="warning" title="This interview was not finished" className="mb-6" action={<FinishInterviewButton interviewId={id} />}>
@@ -179,6 +241,7 @@ export default async function InterviewReportView({ id }: { id: string }) {
                 <dd className="truncate font-semibold text-text">{interview.company || "—"}</dd>
               </div>
             </dl>
+            {canReevaluate ? <ReevaluateButton interviewId={id} remaining={reevaluationsLeft(interview)} /> : null}
           </CardBody>
         </Card>
 
@@ -188,7 +251,10 @@ export default async function InterviewReportView({ id }: { id: string }) {
             {report?.candidate_summary ? (
               <p className="text-sm leading-6 text-text">{report.candidate_summary}</p>
             ) : (
-              <p className="text-sm text-muted">No AI summary was generated for this session. Scores below come from the per-answer evaluations.</p>
+              <div className="grid gap-3">
+                <p className="text-sm text-muted">No AI summary was generated for this session. Scores below come from the per-answer evaluations.</p>
+                {finished && evaluated.length > 0 ? <GenerateReportButton interviewId={id} /> : null}
+              </div>
             )}
             <ChartFrame title="Score breakdown" description={report ? "From the final report (0–10)" : "Average of evaluated answers (0–10)"}>
               <ScoreBars
@@ -235,9 +301,21 @@ export default async function InterviewReportView({ id }: { id: string }) {
                 </div>
               </div>
             ) : null}
+            {report?.practice_topics?.length ? (
+              <div>
+                <p className="text-sm font-semibold text-text">Topics to practise next</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {report.practice_topics.map((t, i) => (
+                    <Badge key={i}>{t}</Badge>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </CardBody>
         </Card>
       </div>
+
+      {interview.proctoringSummary ? <IntegritySummary id={id} summary={interview.proctoringSummary} /> : null}
 
       <section aria-labelledby="qa-title" className="mt-8">
         <h2 id="qa-title" className="mb-4 text-lg font-semibold text-text">
@@ -254,7 +332,10 @@ export default async function InterviewReportView({ id }: { id: string }) {
                   <Card>
                     <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-muted">Question {idx + 1}</p>
+                        <p className="text-xs font-semibold text-muted">
+                          Question {idx + 1}
+                          {t.timedOut ? <span className="ml-2 font-medium text-warning">· Time ran out</span> : null}
+                        </p>
                         <h3 className="mt-1 text-base font-medium text-text">{t.question || "—"}</h3>
                       </div>
                       <span className="shrink-0 rounded-full bg-background px-3 py-1 text-sm font-semibold tabular-nums text-text">

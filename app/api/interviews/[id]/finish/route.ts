@@ -7,6 +7,7 @@ import { averageOverallScore } from "@/lib/interviewRecords";
 import { isClosedStatus } from "@/lib/interviewFlow";
 import { evaluateMany, questionsNeedingEvaluation } from "@/lib/conversationEval";
 import { interviewResumeContext } from "@/lib/resumeStore";
+import { endSessions, storeSummary } from "@/lib/proctoringStore";
 
 function allowAnonymousInterviews() {
   return process.env.ALLOW_ANON_INTERVIEWS === "true" || process.env.NODE_ENV !== "production";
@@ -20,7 +21,7 @@ function getAnonId(request: Request) {
   return raw;
 }
 
-const ENDED_REASONS = new Set(["manual_end", "max_questions", "time_limit", "proctor_violations"]);
+const ENDED_REASONS = new Set(["manual_end", "max_questions", "time_limit"]);
 
 export async function POST(
   request: Request,
@@ -52,15 +53,9 @@ export async function POST(
     return Response.json({ ok: false, error: "Invalid interview id." }, { status: 400 });
   }
 
-  const body = (await request.json().catch(() => null)) as
-    | {
-        endedReason?: string;
-        proctoring?: {
-          violations?: number;
-          lastViolation?: string;
-        };
-      }
-    | null;
+  // Any proctoring numbers sent by the browser are ignored: the integrity summary is
+  // computed from server-validated events below.
+  const body = (await request.json().catch(() => null)) as { endedReason?: string } | null;
 
   const interviews = db.collection("interviews");
   const ownerFilter = { _id: new ObjectId(id), ...(user ? { userId: user.id } : { anonId }) };
@@ -87,14 +82,14 @@ export async function POST(
 
   const now = new Date();
   const rawReason = typeof body?.endedReason === "string" ? body.endedReason.trim() : "";
+  // Proctoring never ends an interview by itself (older clients sent "proctor_violations").
   const endedReason = ENDED_REASONS.has(rawReason) ? rawReason : "manual_end";
-  const status = endedReason === "proctor_violations" ? "terminated" : "completed";
+  const status = "completed";
   // The score is derived from the stored, server-evaluated turns only.
   const turns = Array.isArray(doc.turns) ? doc.turns : [];
   const averageScore = averageOverallScore(turns);
   const pendingEvaluations = turns.filter((t: { evaluationPending?: boolean }) => t?.evaluationPending).length;
 
-  const violations = Number(body?.proctoring?.violations);
   const update = await interviews.updateOne(
     { ...ownerFilter, status: { $nin: ["completed", "terminated"] } },
     {
@@ -107,15 +102,6 @@ export async function POST(
         unevaluatedCount: pendingEvaluations,
         endedReason,
         ...(doc.conversation ? { "conversation.completed": true, "conversation.currentQuestionId": null } : {}),
-        proctoring: body?.proctoring
-          ? {
-              violations: Number.isFinite(violations) ? Math.max(0, Math.min(100, violations)) : null,
-              lastViolation:
-                typeof body.proctoring.lastViolation === "string"
-                  ? body.proctoring.lastViolation.slice(0, 200)
-                  : null,
-            }
-          : null,
       },
       $unset: { pendingEvaluations: "" },
     },
@@ -125,5 +111,19 @@ export async function POST(
     return Response.json({ ok: true, alreadyFinished: true });
   }
 
-  return Response.json({ ok: true, status, averageScore, pendingEvaluations });
+  // Close proctoring sessions and store the integrity summary, kept separate from the scores above.
+  // A failure here must not undo the completed interview; the summary can be rebuilt from the events.
+  let proctoring: { status: string; reviewStatus: string } | null = null;
+  if (user) {
+    try {
+      const owner = { interviewId: new ObjectId(id), userId: user.id };
+      await endSessions(db, owner, endedReason);
+      const summary = await storeSummary(db, owner);
+      proctoring = { status: summary.status, reviewStatus: summary.reviewStatus };
+    } catch (e) {
+      console.error("[finish] proctoring summary not stored:", e instanceof Error ? e.name : "unknown");
+    }
+  }
+
+  return Response.json({ ok: true, status, averageScore, pendingEvaluations, proctoring });
 }

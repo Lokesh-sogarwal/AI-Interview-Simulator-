@@ -1,12 +1,13 @@
 import { ObjectId } from "mongodb";
 import type { AuthUser } from "@/lib/auth";
+import type { LLMProvider } from "@/lib/llm";
 import { FakeDb } from "./fakeDb";
 
 /** Shared mutable state read by the module mocks in each test file. */
 export type TestState = {
   user: AuthUser | null;
   db: FakeDb | null;
-  llm: ((params: { system: string; user: string }) => { text: string; provider: "huggingface" | "openai" } | null) | null;
+  llm: ((params: { system: string; user: string }) => { text: string; provider: LLMProvider } | null) | null;
 };
 
 export function newUser(overrides: Partial<AuthUser> = {}): AuthUser {

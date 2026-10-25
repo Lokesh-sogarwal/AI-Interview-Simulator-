@@ -196,6 +196,7 @@ export async function POST(request: Request) {
     const ai = await llmText({
       system,
       user: `${userPromptBase}${extra}`,
+      task: "question",
       models: {
         huggingface: process.env.HUGGINGFACE_MODEL_QUESTION || process.env.HUGGINGFACE_MODEL,
         openai: process.env.OPENAI_MODEL,

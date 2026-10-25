@@ -1,293 +1,158 @@
+import { randomUUID } from "crypto";
+
 import { getCurrentUser } from "@/lib/auth";
-import { aiUnavailableResponse, llmText } from "@/lib/llm";
-import { jsonError, toObjectId } from "@/lib/http";
-import { getDb } from "@/lib/mongodb";
-import { safeJsonParse } from "@/lib/openai";
-import {
-  interviewSimulatorSystemPrompt,
-  type InterviewType,
-} from "@/lib/prompts";
+import { generateFinalReport, type ReportTurn } from "@/lib/finalReport";
+import { aiFailureDetail, aiUnavailableResponse } from "@/lib/llm";
+import { jsonError, readJsonObject, toObjectId } from "@/lib/http";
+import { isClosedStatus, parseInterviewType } from "@/lib/interviewFlow";
+import { dbUnavailableMessage, getDb } from "@/lib/mongodb";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { clampString } from "@/lib/validators";
 
-export type FinalReport = {
-  candidate_summary: string;
-  technical_knowledge_score: number;
-  communication_skill_score: number;
-  confidence_score: number;
-  problem_solving_score: number;
-  english_fluency_score: number;
-  project_knowledge_score: number;
-  strengths: string[];
-  weaknesses: string[];
-  final_recommendation: "Hire" | "No Hire";
-};
+export type { FinalReport } from "@/lib/finalReport";
 
-function clamp0to10(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(10, value));
+type ReportBody = { interviewId?: unknown };
+
+/**
+ * One structured log line per stage. Only ids, counts and outcome categories
+ * are logged — never transcripts, answers or credentials.
+ */
+function logReport(level: "info" | "warn" | "error", requestId: string, stage: string, fields: Record<string, unknown> = {}) {
+  console[level](JSON.stringify({ scope: "ai.report", requestId, stage, ...fields }));
 }
 
-function round1(value: number) {
-  return Math.round(value * 10) / 10;
+function str(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
-function mean(values: number[]) {
-  if (values.length === 0) return 0;
-  return values.reduce((a, b) => a + b, 0) / values.length;
-}
-
-function normalizeReport(
-  report: FinalReport,
-  computed: {
-    avgTechnicalKnowledge: number;
-    avgCommunicationSkill: number;
-    avgConfidence: number;
-    avgProblemSolving: number;
-    avgEnglishFluency: number;
-    avgProjectKnowledge: number;
-  },
-): FinalReport {
-  const avgTechnicalKnowledge = clamp0to10(round1(computed.avgTechnicalKnowledge));
-  const avgCommunicationSkill = clamp0to10(round1(computed.avgCommunicationSkill));
-  const avgConfidence = clamp0to10(round1(computed.avgConfidence));
-  const avgProblemSolving = clamp0to10(round1(computed.avgProblemSolving));
-  const avgEnglishFluency = clamp0to10(round1(computed.avgEnglishFluency));
-  const avgProjectKnowledge = clamp0to10(round1(computed.avgProjectKnowledge));
-
-  const technical = clamp0to10(
-    Number(report.technical_knowledge_score ?? avgTechnicalKnowledge),
-  );
-  const communication = clamp0to10(
-    Number(report.communication_skill_score ?? avgCommunicationSkill),
-  );
-  const confidence = clamp0to10(Number(report.confidence_score ?? avgConfidence));
-  const problemSolving = clamp0to10(
-    Number(report.problem_solving_score ?? avgProblemSolving),
-  );
-  const english = clamp0to10(
-    Number(report.english_fluency_score ?? avgEnglishFluency),
-  );
-  const project = clamp0to10(
-    Number(report.project_knowledge_score ?? avgProjectKnowledge),
-  );
-
-  const strengths = Array.isArray(report.strengths)
-    ? report.strengths.map(String).filter(Boolean).slice(0, 8)
-    : [];
-  const weaknesses = Array.isArray(report.weaknesses)
-    ? report.weaknesses.map(String).filter(Boolean).slice(0, 8)
-    : [];
-  const summary =
-    typeof report.candidate_summary === "string" ? report.candidate_summary.trim() : "";
-
-  const recommendation =
-    report.final_recommendation === "Hire" || report.final_recommendation === "No Hire"
-      ? report.final_recommendation
-      : null;
-
-  // Guard against inflated scores: if model returns numbers far above computed averages,
-  // snap scores back to computed values.
-  const snapIfTooHigh = (val: number, computedVal: number) =>
-    val - computedVal >= 1.5 ? computedVal : val;
-
-  const derivedAvg = mean([technical, communication, confidence, problemSolving, english, project]);
-  const derivedRecommendation: FinalReport["final_recommendation"] =
-    derivedAvg >= 6.8 && technical >= 6 && communication >= 6 ? "Hire" : "No Hire";
-
-  return {
-    candidate_summary:
-      summary || "Candidate summary not available from transcript.",
-    technical_knowledge_score: snapIfTooHigh(technical, avgTechnicalKnowledge),
-    communication_skill_score: snapIfTooHigh(communication, avgCommunicationSkill),
-    confidence_score: snapIfTooHigh(confidence, avgConfidence),
-    problem_solving_score: snapIfTooHigh(problemSolving, avgProblemSolving),
-    english_fluency_score: snapIfTooHigh(english, avgEnglishFluency),
-    project_knowledge_score: snapIfTooHigh(project, avgProjectKnowledge),
-    strengths,
-    weaknesses,
-    final_recommendation: recommendation ?? derivedRecommendation,
-  };
+function asTurns(value: unknown): ReportTurn[] {
+  return (Array.isArray(value) ? value : []).filter((t): t is ReportTurn => Boolean(t) && typeof t === "object").slice(0, 50);
 }
 
 export async function POST(request: Request) {
-  const user = await getCurrentUser();
-  if (!user) return jsonError("Unauthorized", 401);
+  const requestId = request.headers.get("x-vercel-id") || randomUUID();
+  const fail = (status: number, code: string, error: string, extra?: Record<string, unknown>) =>
+    jsonError(error, status, { code, requestId, ...(extra ?? {}) });
 
-  const rl = rateLimit(request, {
-    keyPrefix: "ai:report",
-    key: user.id,
-    limit: 10,
-    windowMs: 10 * 60 * 1000,
-  });
-  if (!rl.ok) return rateLimitResponse(rl.resetAt);
-
-  const body = (await request.json().catch(() => null)) as
-    | {
-        turns?: Array<{
-          question?: string;
-          answer?: string;
-          evaluation?: {
-            overall_score?: number;
-            technical_score?: number;
-            clarity_score?: number;
-            confidence_score?: number;
-            depth_score?: number;
-            english_fluency_score?: number;
-            project_knowledge_score?: number;
-          };
-        }>;
-        type?: InterviewType;
-        role?: string;
-        experience?: string;
-        company?: string;
-        focusAreas?: string;
-        interviewId?: string;
-      }
-    | null;
-
-  // When the interview is persisted, report on the stored (server-evaluated)
-  // transcript rather than on whatever the browser sends.
-  const interviewOid = toObjectId(body?.interviewId);
-  const db = interviewOid ? await getDb() : null;
-  const storedInterview =
-    db && interviewOid
-      ? await db.collection("interviews").findOne({ _id: interviewOid, userId: user.id }, { projection: { turns: 1 } })
-      : null;
-  if (interviewOid && db && !storedInterview) {
-    return jsonError("Interview not found.", 404);
-  }
-  const sourceTurns = storedInterview && Array.isArray(storedInterview.turns) ? storedInterview.turns : body?.turns;
-  const turns = (Array.isArray(sourceTurns) ? sourceTurns : []).slice(0, 50) as NonNullable<NonNullable<typeof body>["turns"]>;
-  const type = (body?.type || "Technical") as InterviewType;
-  const role = clampString(body?.role?.trim() || "", 120);
-  const experience = clampString(body?.experience?.trim() || "", 40);
-  const company = clampString(body?.company?.trim() || "", 80);
-  const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
-
-  const evals = turns
-    .map((t) => t.evaluation)
-    .filter(Boolean) as Array<NonNullable<(typeof turns)[number]["evaluation"]>>;
-
-  const overallScores = evals.map((e) => Number(e.overall_score ?? 0)).filter((n) => Number.isFinite(n));
-  const technicalScores = evals.map((e) => Number(e.technical_score ?? 0)).filter((n) => Number.isFinite(n));
-  const clarityScores = evals.map((e) => Number(e.clarity_score ?? 0)).filter((n) => Number.isFinite(n));
-  const confidenceScores = evals.map((e) => Number(e.confidence_score ?? 0)).filter((n) => Number.isFinite(n));
-  const depthScores = evals.map((e) => Number(e.depth_score ?? 0)).filter((n) => Number.isFinite(n));
-  const englishScores = evals
-    .map((e) => Number(e.english_fluency_score ?? 0))
-    .filter((n) => Number.isFinite(n));
-  const projectScores = evals
-    .map((e) => Number(e.project_knowledge_score ?? 0))
-    .filter((n) => Number.isFinite(n));
-
-  const avgOverall = mean(overallScores);
-  const avgTechnicalKnowledge = mean(technicalScores);
-  const avgCommunicationSkill = mean([...clarityScores, ...confidenceScores]);
-  const avgConfidence = mean(confidenceScores);
-  const avgProblemSolving = mean(depthScores);
-  const avgEnglishFluency = mean(englishScores);
-  const avgProjectKnowledge = mean(projectScores);
-
-  if (turns.length === 0) {
-    return Response.json(
-      { ok: false, error: "No turns provided." },
-      { status: 400 },
-    );
-  }
-
-  const system = [
-    interviewSimulatorSystemPrompt(),
-    "",
-    "You are generating the FINAL REPORT CARD for the completed interview.",
-    "CRITICAL RULES:",
-    "- Base your feedback ONLY on the provided transcript + computed scoring summary.",
-    "- Do NOT invent projects/technologies/details the candidate did not explicitly mention.",
-    "- Your scores MUST be consistent with the computed averages provided.",
-    "- If the transcript shows incorrect/irrelevant answers, reflect that in weaknesses and suggested focus areas.",
-    "Respond ONLY with valid JSON and no extra text.",
-    "Use this exact schema:",
-    "{",
-    '  "candidate_summary": string,',
-    '  "technical_knowledge_score": number,',
-    '  "communication_skill_score": number,',
-    '  "confidence_score": number,',
-    '  "problem_solving_score": number,',
-    '  "english_fluency_score": number,',
-    '  "project_knowledge_score": number,',
-    '  "strengths": string[],',
-    '  "weaknesses": string[],',
-    '  "final_recommendation": "Hire" | "No Hire"',
-    "}",
-  ].join("\n");
-
-  const prompt = [
-    "Interview context:",
-    `Type: ${type}`,
-    role ? `Role: ${role}` : "",
-    experience ? `Experience: ${experience}` : "",
-    company ? `Company: ${company}` : "",
-    focusAreas ? `Focus Areas: ${focusAreas}` : "",
-    "",
-    "Scoring summary (computed):",
-    `Average overall score: ${round1(avgOverall)}/10`,
-    `Average technical knowledge score: ${round1(avgTechnicalKnowledge)}/10`,
-    `Average communication skill score (from clarity+confidence): ${round1(avgCommunicationSkill)}/10`,
-    `Average confidence score: ${round1(avgConfidence)}/10`,
-    `Average problem-solving score (from depth): ${round1(avgProblemSolving)}/10`,
-    `Average English fluency score: ${round1(avgEnglishFluency)}/10`,
-    `Average project knowledge score: ${round1(avgProjectKnowledge)}/10`,
-    "",
-    "Transcript (latest first is fine):",
-    JSON.stringify(
-      turns.map((t) => ({
-        question: t.question ?? "",
-        answer: t.answer ?? "",
-        evaluation: t.evaluation ?? null,
-      })),
-    ),
-    "",
-    "Create a concise report card. Keep items concrete and actionable.",
-    "Recommendation rule of thumb:",
-    "- If multiple answers are incorrect/irrelevant or communication is weak, recommend No Hire.",
-    "- Recommend Hire only if technical knowledge AND communication are both strong enough for the stated experience level.",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  const ai = await llmText({
-    system,
-    user: prompt,
-    models: {
-      huggingface: process.env.HUGGINGFACE_MODEL_REPORT || process.env.HUGGINGFACE_MODEL_EVAL || process.env.HUGGINGFACE_MODEL,
-      openai: process.env.OPENAI_MODEL,
-    },
-  });
-
-  if (ai) {
-    const parsed = safeJsonParse<FinalReport>(ai.text);
-    if (parsed) {
-      const normalized = normalizeReport(parsed, {
-        avgTechnicalKnowledge,
-        avgCommunicationSkill,
-        avgConfidence,
-        avgProblemSolving,
-        avgEnglishFluency,
-        avgProjectKnowledge,
-      });
-      if (db && interviewOid) {
-        await db
-          .collection("interviews")
-          .updateOne(
-            { _id: interviewOid, userId: user.id },
-            { $set: { finalReport: normalized, reportSource: ai.provider, updatedAt: new Date() } },
-          );
-      }
-      return Response.json({ ok: true, report: normalized, source: ai.provider });
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      logReport("warn", requestId, "auth", { outcome: "unauthenticated" });
+      return jsonError("Unauthorized", 401);
     }
-  }
 
-  // Do not present a templated report as AI analysis; the client still shows
-  // the per-answer averages it already has.
-  return aiUnavailableResponse("Report generation");
+    const rl = rateLimit(request, {
+      keyPrefix: "ai:report",
+      key: user.id,
+      limit: 10,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      logReport("warn", requestId, "rate_limit", { outcome: "limited" });
+      return rateLimitResponse(rl.resetAt);
+    }
+
+    const body = await readJsonObject<ReportBody>(request);
+    if (!body) {
+      logReport("warn", requestId, "validation", { outcome: "invalid_body" });
+      return fail(400, "invalid_body", "Request body must be a JSON object.");
+    }
+
+    const hasInterviewId = body.interviewId !== undefined && body.interviewId !== null && body.interviewId !== "";
+    const interviewOid = hasInterviewId ? toObjectId(body.interviewId) : null;
+    if (hasInterviewId && !interviewOid) {
+      logReport("warn", requestId, "validation", { outcome: "invalid_interview_id" });
+      return fail(400, "invalid_interview_id", "Invalid interview id.");
+    }
+    // Reports are only generated for saved interviews, from the stored, server-evaluated
+    // record; answers or scores sent by the browser are never used.
+    if (!interviewOid) {
+      logReport("warn", requestId, "validation", { outcome: "missing_interview_id" });
+      return fail(400, "missing_interview_id", "interviewId is required.");
+    }
+    const db = await getDb();
+    if (!db) {
+      logReport("error", requestId, "db", { outcome: "unavailable" });
+      return fail(503, "db_unavailable", dbUnavailableMessage(), { retryable: true });
+    }
+    const interviews = db.collection("interviews");
+    const stored = await interviews.findOne(
+      { _id: interviewOid, userId: user.id },
+      { projection: { turns: 1, transcript: 1, status: 1, type: 1, role: 1, experience: 1, company: 1, focusAreas: 1, finalReport: 1, reportSource: 1 } },
+    );
+    if (!stored) {
+      logReport("warn", requestId, "lookup", { interviewId: interviewOid.toHexString(), outcome: "not_found" });
+      return fail(404, "not_found", "Interview not found.");
+    }
+    // Legacy records may have no status; those predate the finish step and are treated as complete.
+    if (stored.status !== undefined && stored.status !== null && !isClosedStatus(stored.status)) {
+      logReport("warn", requestId, "lookup", { interviewId: interviewOid.toHexString(), outcome: "not_finished", status: String(stored.status) });
+      return fail(409, "interview_not_finished", "Finish the interview before generating its report.");
+    }
+    // A saved report is returned as is: no AI call. Only the explicit, limited
+    // re-evaluation (/api/interviews/[id]/reevaluate) can replace it.
+    if (stored.finalReport) {
+      logReport("info", requestId, "lookup", { interviewId: interviewOid.toHexString(), outcome: "stored_report" });
+      return Response.json({ ok: true, report: stored.finalReport, source: stored.reportSource ?? "stored", stored: true });
+    }
+
+    // Older records stored the answers under `transcript`.
+    const turns = asTurns(Array.isArray(stored.turns) && stored.turns.length ? stored.turns : stored.transcript);
+    const ctx = stored;
+    const type = parseInterviewType(ctx.type, "Technical");
+    const role = clampString(str(ctx.role), 120);
+    const experience = clampString(str(ctx.experience), 40);
+    const company = clampString(str(ctx.company), 80);
+    const focusAreas = clampString(str(ctx.focusAreas), 600);
+
+    const evals = turns
+      .map((t) => t.evaluation)
+      .filter((e): e is NonNullable<ReportTurn["evaluation"]> => Boolean(e) && typeof e === "object");
+
+    logReport("info", requestId, "lookup", {
+      interviewId: interviewOid.toHexString(),
+      outcome: "found",
+      turns: turns.length,
+      evaluated: evals.length,
+    });
+
+    if (turns.length === 0) {
+      return fail(422, "no_answers", "No answers were recorded in this interview, so there is nothing to evaluate.");
+    }
+    // The report is kept permanently, so don't build it while answers still await evaluation.
+    const pending = turns.filter((t) => (t as { evaluationPending?: unknown }).evaluationPending === true).length;
+    if (evals.length === 0 || pending > 0) {
+      // Averages over zero evaluations would be 0 and snap every score to 0 — never report that.
+      logReport("warn", requestId, "evaluation", { outcome: "all_pending", turns: turns.length });
+      return fail(409, "evaluation_pending", "Your answers haven't been evaluated yet. Retry the evaluation, then generate the report.", { retryable: true });
+    }
+
+    const outcome = await generateFinalReport(turns, { type, role, experience, company, focusAreas });
+    if (!outcome.ok && outcome.reason === "provider_unavailable") {
+      logReport("error", requestId, "generate", { outcome: "provider_unavailable", reason: aiFailureDetail().reason });
+      // Do not present a templated report as AI analysis; the client still shows
+      // the per-answer averages it already has.
+      return aiUnavailableResponse("Report generation");
+    }
+    if (!outcome.ok) {
+      logReport("error", requestId, "generate", { outcome: "malformed_output", provider: outcome.provider });
+      return fail(502, "ai_invalid_output", "The AI returned an unusable report. Please try again.", { retryable: true });
+    }
+    const { report: normalized, provider } = outcome;
+    // Written only if no report exists yet, so concurrent requests can't store two different ones.
+    const write = await interviews.updateOne(
+      { _id: interviewOid, userId: user.id, finalReport: null },
+      { $set: { finalReport: normalized, reportSource: provider, reportGeneratedAt: new Date(), updatedAt: new Date() } },
+    );
+    if (write.matchedCount === 0) {
+      const winner = await interviews.findOne({ _id: interviewOid, userId: user.id }, { projection: { finalReport: 1, reportSource: 1 } });
+      logReport("info", requestId, "generate", { outcome: "lost_race", provider });
+      return Response.json({ ok: true, report: winner?.finalReport ?? normalized, source: winner?.reportSource ?? provider, stored: true });
+    }
+    logReport("info", requestId, "generate", { outcome: "ok", provider, persisted: true });
+    return Response.json({ ok: true, report: normalized, source: provider });
+  } catch (e) {
+    logReport("error", requestId, "unexpected", { error: e instanceof Error ? e.name : "unknown" });
+    return fail(500, "internal_error", "Something went wrong while generating the report. Please try again.", { retryable: true });
+  }
 }

@@ -36,7 +36,7 @@ export const DEFAULT_DETAILS: InterviewDetails = {
   company: "",
   focusAreas: "",
   useResume: false,
-  interactionMode: "typing",
+  interactionMode: "video",
 };
 
 export function normalizeExperience(raw: unknown) {
@@ -58,7 +58,8 @@ export function parseDetails(value: string | null): InterviewDetails | null {
       company: typeof parsed.company === "string" ? parsed.company.slice(0, 80) : "",
       focusAreas: typeof parsed.focusAreas === "string" ? parsed.focusAreas.slice(0, 600) : "",
       useResume: parsed.useResume !== false,
-      interactionMode: parsed.interactionMode === "video" ? "video" : "typing",
+      // Interviews are video-only; settings saved by the old typing mode open as video.
+      interactionMode: "video",
     };
   } catch {
     return null;

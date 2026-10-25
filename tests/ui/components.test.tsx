@@ -13,7 +13,8 @@ vi.mock("next/navigation", () => ({
 import AppShell from "@/app/components/shell/AppShell";
 import { isNavActive, navGroups } from "@/app/components/shell/nav";
 import { OptionCards } from "@/app/components/ui";
-import { PreflightScreen } from "@/app/interview/components/LiveParts";
+import { CompletionView } from "@/app/interview/components/LiveParts";
+import { CallControls, VideoLobby } from "@/app/interview/components/VideoCall";
 import InterviewSetupClient from "@/app/interview/setup/InterviewSetupClient";
 import { DETAILS_KEY, parseDetails } from "@/app/lib/interviewStorage";
 
@@ -26,6 +27,10 @@ describe("interview configuration storage", () => {
   it("round-trips the Mixed type and Adaptive difficulty", () => {
     const parsed = parseDetails(JSON.stringify({ type: "Mixed", difficulty: "Adaptive", role: "SRE", interactionMode: "video" }));
     expect(parsed).toMatchObject({ type: "Mixed", difficulty: "Adaptive", role: "SRE", interactionMode: "video" });
+  });
+
+  it("opens settings saved by the old typing mode as a video interview", () => {
+    expect(parseDetails(JSON.stringify({ type: "HR", interactionMode: "typing" }))?.interactionMode).toBe("video");
   });
 
   it("falls back safely for corrupted storage", () => {
@@ -109,32 +114,89 @@ describe("option cards", () => {
   });
 });
 
-describe("video preflight", () => {
+describe("video lobby", () => {
   const base = {
     meta: [["Type", "Mixed"]] as Array<[string, string]>,
-    resume: { needed: false, status: "ready" as const },
-    detector: "ready" as const,
+    stream: null,
+    version: 0,
+    micLevel: 0,
+    engine: "browser" as const,
+    detector: "idle" as const,
     canStart: false,
     starting: false,
-    onRequestCamera: () => {},
-    onRequestMic: () => {},
+    onRequestDevices: () => {},
     onLoadDetector: () => {},
     onStart: () => {},
+    consent: true,
+    onConsentChange: () => {},
+    fullscreenSupported: true,
   };
 
-  it("offers typing mode when camera permission is denied", () => {
-    const onUseTyping = vi.fn();
-    render(<PreflightScreen {...base} interactionMode="video" camera="denied" mic="granted" onUseTyping={onUseTyping} />);
-    expect(screen.getByText(/Blocked or unavailable/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Start interview" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Use typing mode" }));
-    expect(onUseTyping).toHaveBeenCalled();
+  it("discloses proctoring before anything starts and asks for agreement", () => {
+    const onConsentChange = vi.fn();
+    render(<VideoLobby {...base} camera="unknown" mic="unknown" consent={false} onConsentChange={onConsentChange} />);
+    expect(screen.getByText("Proctoring and privacy")).toBeTruthy();
+    expect(screen.getByText(/Video and audio are never recorded or stored/)).toBeTruthy();
+    expect(screen.getByText(/deleted automatically after 180 days/)).toBeTruthy();
+    expect(screen.getByText(/never end the interview, change your scores, or prove misconduct/)).toBeTruthy();
+    expect(screen.getByText(/exiting fullscreen/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/agree to proctoring/));
+    expect(onConsentChange).toHaveBeenCalledWith(true);
   });
 
-  it("does not ask for devices in typing mode", () => {
-    render(<PreflightScreen {...base} interactionMode="typing" camera="unknown" mic="unknown" canStart onUseTyping={() => {}} />);
-    expect(screen.queryByText("Camera")).toBeNull();
+  it("doesn't mention fullscreen where the browser can't do it", () => {
+    render(<VideoLobby {...base} camera="unknown" mic="unknown" fullscreenSupported={false} />);
+    expect(screen.queryByText(/exiting fullscreen/)).toBeNull();
+  });
+
+  it("asks for camera and microphone before the interview can start", () => {
+    const onRequestDevices = vi.fn();
+    render(<VideoLobby {...base} camera="unknown" mic="unknown" onRequestDevices={onRequestDevices} />);
+    expect((screen.getByRole("button", { name: "Start interview" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Allow camera and microphone" }));
+    expect(onRequestDevices).toHaveBeenCalledOnce();
+    expect(screen.getByText(/Video and audio are never recorded/)).toBeTruthy();
+  });
+
+  it("explains a blocked microphone and offers to try again", () => {
+    render(<VideoLobby {...base} camera="granted" mic="denied" />);
+    expect(screen.getByText(/Blocked\. Allow it in your browser/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try camera and microphone again" })).toBeTruthy();
+  });
+
+  it("lets the candidate continue with audio only when there is no camera", () => {
+    render(<VideoLobby {...base} camera="unavailable" mic="granted" canStart />);
+    expect(screen.getByText(/You can still interview with audio only/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Start interview" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each([
+    ["browser", /Live captions in this browser/],
+    ["server", /Transcribed after each answer/],
+    ["none", /can't capture speech/],
+  ] as const)("describes the %s speech-to-text path", (engine, text) => {
+    render(<VideoLobby {...base} engine={engine} camera="granted" mic="granted" />);
+    expect(screen.getByText(text)).toBeTruthy();
+  });
+
+  it("offers no typing mode", () => {
+    render(<VideoLobby {...base} camera="denied" mic="denied" />);
+    expect(screen.queryByText(/typing/i)).toBeNull();
+  });
+});
+
+describe("call controls", () => {
+  it("toggles the microphone and camera and ends the call", () => {
+    const onToggleMic = vi.fn();
+    const onToggleCamera = vi.fn();
+    const onEnd = vi.fn();
+    render(<CallControls micOn cameraOn={false} onToggleMic={onToggleMic} onToggleCamera={onToggleCamera} onEnd={onEnd} />);
+    const mic = screen.getByRole("button", { name: "Mute microphone" });
+    expect(mic.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(mic);
+    fireEvent.click(screen.getByRole("button", { name: "Turn camera on" }));
+    fireEvent.click(screen.getByRole("button", { name: "End interview" }));
+    expect([onToggleMic, onToggleCamera, onEnd].every((f) => f.mock.calls.length === 1)).toBe(true);
   });
 });
 
@@ -143,6 +205,13 @@ describe("interview setup", () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, slots: [] })));
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it("offers only the video interview, with no typing option", () => {
+    render(<InterviewSetupClient />);
+    expect(screen.getAllByText("Video interview").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Typing")).toBeNull();
+    expect(screen.queryByText(/Type your answers/)).toBeNull();
+  });
 
   it("offers all three interview types and four difficulties", () => {
     render(<InterviewSetupClient />);
@@ -176,5 +245,28 @@ describe("interview setup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start interview" }));
     await vi.waitFor(() => expect(window.location.href).toBe("/interview"));
     expect(JSON.parse(window.localStorage.getItem(DETAILS_KEY)!)).toMatchObject({ type: "Mixed", difficulty: "Hard", role: "Platform Engineer", useResume: false });
+  });
+});
+
+describe("interview completion", () => {
+  const base = { averageScore: 6.5, report: null, endedReason: "manual_end", saved: true, interviewId: "x" };
+
+  it("explains that there is nothing to evaluate when no answers were given", () => {
+    render(<CompletionView {...base} averageScore={null} answered={0} reportError="No answers were recorded in this interview, so there is nothing to evaluate." />);
+    expect(screen.getByText("Nothing to evaluate")).toBeTruthy();
+    expect(screen.queryByText("AI report unavailable")).toBeNull();
+  });
+
+  it("shows the server's error and offers a retry for recoverable report failures", () => {
+    const onRetryReport = vi.fn();
+    render(<CompletionView {...base} answered={3} reportError="Report generation is temporarily unavailable." reportRetryable onRetryReport={onRetryReport} />);
+    expect(screen.getByText(/Report generation is temporarily unavailable\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onRetryReport).toHaveBeenCalledOnce();
+  });
+
+  it("does not offer a retry for permanent failures", () => {
+    render(<CompletionView {...base} answered={3} reportError="Finish the interview before generating its report." reportRetryable={false} onRetryReport={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 });

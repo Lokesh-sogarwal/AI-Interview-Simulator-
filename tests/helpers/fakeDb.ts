@@ -144,6 +144,11 @@ function applyUpdate(doc: Doc, update: Doc, filter: Doc = {}) {
         case "$inc":
           setPath(doc, path, (Number(getPath(doc, path)) || 0) + Number(value));
           break;
+        case "$max": {
+          const cur = getPath(doc, path);
+          if (cur === undefined || cmp(value, cur) > 0) setPath(doc, path, value);
+          break;
+        }
         case "$push": {
           const list = Array.isArray(getPath(doc, path)) ? [...(getPath(doc, path) as unknown[])] : [];
           const spec = value as Doc;
@@ -246,6 +251,11 @@ export class FakeCollection {
     const index = this.docs.findIndex((d) => matches(d, filter));
     if (index >= 0) this.docs.splice(index, 1);
     return { deletedCount: index >= 0 ? 1 : 0 };
+  }
+  async deleteMany(filter: Doc = {}) {
+    const before = this.docs.length;
+    this.docs = this.docs.filter((d) => !matches(d, filter));
+    return { deletedCount: before - this.docs.length };
   }
   async countDocuments(filter: Doc = {}) {
     return this.docs.filter((d) => matches(d, filter)).length;

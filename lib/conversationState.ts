@@ -13,7 +13,8 @@ export type ConversationStatus =
   | "completed"
   | "error";
 
-export type PendingTurn = { requestId: string; action: "start" | "reply" | "skip"; text: string };
+/** `timedOut`: sent automatically when the answer timer ran out (retries keep the flag). */
+export type PendingTurn = { requestId: string; action: "start" | "reply" | "skip"; text: string; timedOut?: boolean };
 
 export type LiveState = {
   status: ConversationStatus;

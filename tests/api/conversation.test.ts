@@ -20,6 +20,7 @@ import { GET as getConversation, POST as converse } from "@/app/api/interviews/[
 import { POST as finish } from "@/app/api/interviews/[id]/finish/route";
 import { POST as evaluatePending } from "@/app/api/interviews/[id]/evaluate-pending/route";
 import { POST as createSession } from "@/app/api/interviews/session/route";
+import { llmText } from "@/lib/llm";
 
 const reply = (o: Record<string, unknown>) => ({ text: JSON.stringify(o), provider: "huggingface" as const });
 let n = 0;
@@ -156,6 +157,75 @@ describe("conversational interview", () => {
     expect(fin.averageScore).toBe(7);
     expect(fin.pendingEvaluations).toBe(0);
     expect(doc().conversation.completed).toBe(true);
+  });
+
+  it("sends interviewer turns to the question provider and scoring to the evaluation provider", async () => {
+    const id = await newInterview();
+    state.llm = interviewer([
+      { responseText: "Hello! Walk me through your caching design.", responseType: "next_question" },
+      { responseText: "Good. Next: how would you debug a memory leak?", responseType: "next_question" },
+    ]);
+    await call(id, { requestId: rid(), action: "start" });
+    await call(id, { requestId: rid(), action: "reply", text: "We cached computed reports in Redis with a TTL." });
+    await Promise.all(state.background);
+    const calls = vi.mocked(llmText).mock.calls.map(([p]) => p);
+    const turns = calls.filter((p) => !p.system.includes("strict but fair interviewer"));
+    const evals = calls.filter((p) => p.system.includes("strict but fair interviewer"));
+    expect(turns.length).toBe(2);
+    expect(turns.every((p) => p.task === "question" && p.json === true)).toBe(true);
+    expect(evals.length).toBe(1);
+    expect(evals.every((p) => p.task === "evaluation" && p.jsonSchema)).toBe(true);
+  });
+
+  it("accepts a timed-out reply however short, flags it, and still rejects short manual replies", async () => {
+    const id = await newInterview();
+    const prompts: string[] = [];
+    state.llm = interviewer(
+      [
+        { responseText: "Hello! Walk me through your caching design.", responseType: "next_question" },
+        { responseText: "Thanks. Next: how would you debug a memory leak?", responseType: "next_question" },
+      ],
+      prompts,
+    );
+    await call(id, { requestId: rid(), action: "start" });
+    expect((await call(id, { requestId: rid(), action: "reply", text: "O" })).status).toBe(400);
+    const res = await call(id, { requestId: rid(), action: "reply", text: "O", timedOut: true });
+    expect(res.status).toBe(200);
+    const sent = doc().conversation.messages.find((m: { role: string }) => m.role === "candidate");
+    expect(sent).toMatchObject({ text: "O", kind: "answer", timedOut: true });
+    expect(prompts.at(-1)).toContain("answer time ran out");
+  });
+
+  it("records a timed-out empty answer as unanswered (scored 0, nothing invented)", async () => {
+    const id = await newInterview();
+    const prompts: string[] = [];
+    state.llm = interviewer(
+      [
+        { responseText: "Hello! Walk me through your caching design.", responseType: "next_question" },
+        { responseText: "No problem. Next: how would you debug a memory leak?", responseType: "next_question" },
+      ],
+      prompts,
+    );
+    await call(id, { requestId: rid(), action: "start" });
+    const requestId = rid();
+    expect((await call(id, { requestId, action: "skip", text: "", timedOut: true })).status).toBe(200);
+    // A retry of the same automatic submission is not stored twice.
+    expect((await call(id, { requestId, action: "skip", text: "", timedOut: true })).data.duplicate).toBe(true);
+    const candidate = doc().conversation.messages.filter((m: { role: string }) => m.role === "candidate");
+    expect(candidate).toEqual([expect.objectContaining({ kind: "skip", text: "(No answer: time ran out)", timedOut: true })]);
+    expect(prompts.at(-1)).toContain("ran out of time without answering");
+    await Promise.all(state.background);
+    expect(doc().turns[0]).toMatchObject({ answer: "", timedOut: true, evaluationSource: "timed_out", evaluation: expect.objectContaining({ overall_score: 0 }) });
+  });
+
+  it("does not accept timed-out submissions once the interview is finished", async () => {
+    const id = await newInterview();
+    state.llm = interviewer([{ responseText: "Hello! Walk me through your caching design.", responseType: "next_question" }]);
+    await call(id, { requestId: rid(), action: "start" });
+    await finish(jsonRequest(`/api/interviews/${id}/finish`, {}), params({ id }));
+    const res = await call(id, { requestId: rid(), action: "reply", text: "late", timedOut: true });
+    expect(res.status).toBe(409);
+    expect(res.data.code).toBe("interview_closed");
   });
 
   it("marks evaluations pending (not invented) when scoring fails, and retries them later", async () => {

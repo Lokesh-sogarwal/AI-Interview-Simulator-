@@ -25,6 +25,7 @@ import { aiFailureDetail, llmText } from "@/lib/llm";
 import { dbUnavailableMessage, getDb } from "@/lib/mongodb";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { interviewResumeContext } from "@/lib/resumeStore";
+import { recordServerEvent } from "@/lib/proctoringStore";
 
 const LOCK_TTL_MS = 60_000;
 const REQUEST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -90,14 +91,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!ObjectId.isValid(id)) return Response.json({ ok: false, error: "Invalid interview id." }, { status: 400 });
   const oid = new ObjectId(id);
 
-  const body = (await request.json().catch(() => null)) as { requestId?: unknown; action?: unknown; text?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { requestId?: unknown; action?: unknown; text?: unknown; timedOut?: unknown } | null;
   const requestId = typeof body?.requestId === "string" ? body.requestId : "";
   const action = ["start", "reply", "skip", "pause", "resume"].includes(body?.action as string) ? (body!.action as "start" | "reply" | "skip" | "pause" | "resume") : null;
   if (!REQUEST_ID_RE.test(requestId) || !action) {
     return Response.json({ ok: false, error: "requestId and a valid action (start, reply, skip, pause, resume) are required." }, { status: 400 });
   }
   const rawText = typeof body?.text === "string" ? body.text.slice(0, CONVERSATION_LIMITS.maxUtteranceChars) : "";
-  if (action === "reply" && !isUsableUtterance(rawText)) {
+  // Sent automatically when the candidate's answer timer ran out. The timer is a UX feature,
+  // not a deadline the server enforces, so late or early requests are treated the same way.
+  const timedOut = body?.timedOut === true && (action === "reply" || action === "skip");
+  // A timed-out reply keeps whatever was typed, however short; a manual one must be usable.
+  if (action === "reply" && !(timedOut ? cleanUtterance(rawText).length > 0 : isUsableUtterance(rawText))) {
     return Response.json({ ok: false, code: "too_short", error: "That reply was empty or too short. Please say or type your answer." }, { status: 400 });
   }
 
@@ -111,6 +116,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // Pausing stops the session clock; no AI call involved.
   if (action === "pause" || action === "resume") {
     const at = new Date();
+    // Observed by the server itself, so it can't be hidden by the browser.
+    if (action === "pause" && !doc.conversationPausedAt) await recordServerEvent(db, { interviewId: oid, userId: user.id }, "pause_used");
     if (action === "pause" && !doc.conversationPausedAt && doc.conversationStartedAt) {
       await interviews.updateOne({ _id: oid, userId: user.id, conversationPausedAt: { $exists: false } }, { $set: { conversationPausedAt: at } });
     } else if (action === "resume" && doc.conversationPausedAt) {
@@ -146,6 +153,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     { $set: { conversationLock: { requestId, at: now } } },
   );
   if (lock.matchedCount === 0) {
+    await recordServerEvent(db, { interviewId: oid, userId: user.id }, "concurrent_request_rejected");
     return Response.json({ ok: false, code: "busy", retryable: true, error: "The interviewer is still responding to your previous message." }, { status: 409 });
   }
 
@@ -156,12 +164,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       candidateMsg = {
         id: randomUUID(),
         role: "candidate",
-        text: action === "skip" ? "(Skipped this question)" : rawText.trim(),
+        text: action === "skip" ? (timedOut ? "(No answer: time ran out)" : "(Skipped this question)") : rawText.trim(),
         cleanText: action === "skip" ? undefined : cleanUtterance(rawText),
         kind: action === "skip" ? "skip" : "answer",
         questionId: conv.currentQuestionId!,
         at: now,
         requestId,
+        ...(timedOut ? { timedOut: true } : {}),
       };
       await interviews.updateOne({ _id: oid, userId: user.id }, { $push: { "conversation.messages": candidateMsg } as never, $set: { updatedAt: now, status: "in_progress" } });
       conv = { ...conv, messages: [...conv.messages, candidateMsg] };
@@ -183,6 +192,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       budget,
       utterance: isOpening ? null : candidateMsg?.kind === "skip" ? "" : candidateMsg?.cleanText ?? candidateMsg?.text ?? "",
       skipped: candidateMsg?.kind === "skip",
+      timedOut: Boolean(candidateMsg?.timedOut),
     };
 
     const candidateTexts = conv.messages.filter((m) => m.role === "candidate" && m.kind === "answer").map((m) => m.text);
@@ -193,8 +203,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const ai = await llmText({
         system: conversationSystemPrompt(),
         user: conversationUserPrompt(promptInput) + correction,
-        maxTokens: 500,
+        // An interviewer turn is ~100-200 tokens of JSON.
+        maxTokens: 350,
         temperature: 0.5,
+        task: "question",
+        json: true,
         models: { huggingface: process.env.HUGGINGFACE_MODEL_CONVERSATION || process.env.HUGGINGFACE_MODEL_QUESTION || process.env.HUGGINGFACE_MODEL, openai: process.env.OPENAI_MODEL },
       }).catch(() => null);
       if (!ai) break; // provider unavailable: no point retrying immediately

@@ -57,7 +57,8 @@ export async function POST(request: Request) {
   const difficulty = parseDifficulty(body?.difficulty, "Adaptive");
   const company = clampString(body?.company?.trim() || "", 80);
   const focusAreas = clampString(body?.focusAreas?.trim() || "", 600);
-  const interactionMode = body?.interactionMode === "video" ? "video" : "typing";
+  // Interviews are voice/video only; older records keep their stored "typing" mode for history.
+  const interactionMode = "video" as const;
   const useResume = body?.useResume !== false;
 
   const now = new Date();
